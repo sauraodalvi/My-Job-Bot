@@ -1,0 +1,22 @@
+# Auto Job Applier — Python dependencies
+# Install everything with:  pip install -r requirements.txt
+
+# Browser automation
+selenium
+undetected-chromedriver          # auto-downloads a matching Chrome driver (auto_manage_driver = True)
+setuptools                       # required by undetected-chromedriver on some Python versions
+
+# Desktop dialogs / prompts
+pyautogui
+
+# AI providers (for resume tailoring, cover letters, and question answering)
+openai                           # OpenAI, DeepSeek, and other OpenAI-compatible APIs
+google-generativeai              # Google Gemini
+
+# Resume / document generation
+fpdf2                            # PDF output (imported as `fpdf`)
+python-docx                      # .docx output (imported as `docx`)
+
+# Local applied-jobs history web UI (app.py)
+flask
+flask-cors
