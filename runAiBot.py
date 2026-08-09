@@ -382,17 +382,19 @@ def get_job_description(
     - `skipReason: str | None`
     - `skipMessage: str | None`
     '''
+    # Initialise every return value before the try, so an early failure (e.g. the
+    # description element not being found) can never leave them unbound.
+    ##> ------ Dheeraj Deshwal : dheeraj9811 Email:dheeraj20194@iiitd.ac.in/dheerajdeshwal9811@gmail.com - Feature ------
+    jobDescription = "Unknown"
+    ##<
+    experience_required = "Unknown"
+    skip = False
+    skipReason = None
+    skipMessage = None
     try:
-        ##> ------ Dheeraj Deshwal : dheeraj9811 Email:dheeraj20194@iiitd.ac.in/dheerajdeshwal9811@gmail.com - Feature ------
-        jobDescription = "Unknown"
-        ##<
-        experience_required = "Unknown"
         found_masters = 0
         jobDescription = find_by_class(driver, "jobs-box__html-content").text
         jobDescriptionLow = jobDescription.lower()
-        skip = False
-        skipReason = None
-        skipMessage = None
         for word in bad_words:
             if word.lower() in jobDescriptionLow:
                 skipMessage = f'\n{jobDescription}\n\nContains bad word "{word}". Skipping this job!\n'
@@ -418,8 +420,7 @@ def get_job_description(
             experience_required = "Error in extraction"
             print_lg("Unable to extract years of experience required!")
             # print_lg(e)
-    finally:
-        return jobDescription, experience_required, skip, skipReason, skipMessage
+    return jobDescription, experience_required, skip, skipReason, skipMessage
         
 
 
