@@ -70,8 +70,9 @@
         nav button:hover { color: var(--ink); }
         nav button.active { color: var(--brand); border-bottom-color: var(--brand); }
         /* Top margin so the first setting isn't flush against the tab bar, and a
-           generous bottom gap so the fixed save bar never hides the last field. */
-        main { padding: 28px 0 140px; }
+           generous bottom gap so the fixed save bar never hides the last field.
+           Uses main.wrap (not just main) so it beats the .wrap padding rule. */
+        main.wrap { padding: 28px 16px 150px; }
         .panel { display: none; }
         .panel.active { display: block; }
         .field {
@@ -222,7 +223,7 @@
             /* Tab bar scrolls sideways instead of wrapping into tall rows. */
             nav { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; }
             nav button { padding: 11px 12px; font-size: 13px; }
-            main { padding: 22px 0 168px; }
+            main.wrap { padding: 22px 12px 184px; }
             .savebar { padding: 10px 12px; }
             .savebar .inner { flex-wrap: wrap; gap: 8px; }
             .savebar .msg { flex-basis: 100%; margin: 0; }

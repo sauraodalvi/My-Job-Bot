@@ -59,11 +59,12 @@ if not exist ".venv\.deps_installed" (
     echo done> ".venv\.deps_installed"
 )
 
-REM 4) Open the browser shortly after the server starts.
-start "" cmd /c "timeout /t 2 /nobreak >nul & start "" http://127.0.0.1:5000"
+REM 4) Start the control panel. It chooses a free port, prints the address, and
+REM    opens your browser to it.
+set "PANEL_OPEN_BROWSER=1"
 
 echo.
-echo Opening the control panel in your browser at http://127.0.0.1:5000
+echo Starting the control panel and opening it in your browser...
 echo Keep this window open while you use the tool. Close it to stop the server.
 echo.
 

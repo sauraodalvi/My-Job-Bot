@@ -36,7 +36,7 @@ New here, or not comfortable editing code? Use the built-in control panel. You s
     - **Linux:** `start.sh` (run `./start.sh` in a terminal)
 
     The first run sets things up automatically (it may take a minute). After that it's quick.
-4. Your browser opens the **control panel** at `http://127.0.0.1:5000`. Fill in the tabs - **Account, Profile, Search, Filters, Run settings** - and click **Save**.
+4. Your browser opens the **control panel** automatically (the exact address, e.g. `http://127.0.0.1:5000`, is shown in the launcher window). Fill in the tabs - **Account, Profile, Search, Filters, Run settings** - and click **Save**.
 5. Go to the **Run** tab and click **Start**. A Chrome window opens and begins applying - keep it in the foreground. You can watch progress in the log and click **Stop** any time.
 
 Everything stays on your own computer: your details are saved locally in `user_config.json` (never uploaded), and the control panel is reachable only from this machine. If you prefer the classic setup, the manual steps below still work exactly as before.
@@ -76,7 +76,7 @@ Click on above image to watch the tutorial for installation and configuration or
 5. Open `settings.py` file in `/config` folder to configure settings like keep screen awake, click interval (time to wait between actions), run in background, automatic Chrome-driver management, etc. as per your needs.
 6. (Optional) Don't forget to add you default resume in the location you mentioned in `default_resume_path = "all resumes/default/resume.pdf"` given in `/config/questions.py`. If one is not provided, it will use your previous resume submitted in LinkedIn or (In Development) generate custom resume if OpenAI APT key is provided!
 7. Run `runAiBot.py` and see the magic happen.
-8. To run the Applied Jobs history UI, run `app.py` and open web browser on `http://localhost:5000`.
+8. To run the local control panel (settings, run controls, and Applied Jobs history), run `app.py` - it prints the address to open (e.g. `http://127.0.0.1:5000`, or another port if 5000 is busy).
 8. If you have questions or need help setting it up or to talk in general, join the github server: https://discord.gg/fFp7uUzWCY
 
 [back to index](#-content)

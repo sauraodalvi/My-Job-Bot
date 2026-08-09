@@ -41,14 +41,13 @@ if [ ! -f ".venv/.deps_installed" ]; then
     touch ".venv/.deps_installed"
 fi
 
-# 4) Open the browser shortly after the server starts (if a browser opener exists).
-if command -v xdg-open >/dev/null 2>&1; then
-    ( sleep 2; xdg-open "http://127.0.0.1:5000" >/dev/null 2>&1 ) &
-fi
+# 4) Start the control panel. It chooses a free port, prints the address, and
+#    opens your browser to it.
+export PANEL_OPEN_BROWSER=1
 
 echo ""
-echo "Open the control panel in your browser at http://127.0.0.1:5000"
-echo "Keep this terminal open while you use the tool. Press Ctrl+C to stop the server."
+echo "Starting the control panel and opening it in your browser..."
+echo "The address is printed below. Keep this terminal open; press Ctrl+C to stop."
 echo ""
 
 # 5) Start the local control panel (runs until you press Ctrl+C).

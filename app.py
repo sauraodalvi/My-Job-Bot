@@ -464,6 +464,41 @@ def api_logs():
         return jsonify({"content": "", "next_offset": offset, "error": str(err)})
 
 
+def _resolve_port(preferred: int = 5000) -> int:
+    '''
+    Pick a port to serve on. Honors the PORT environment variable (the launcher
+    scripts set it). Otherwise tries `preferred`, and if that's taken - e.g. port
+    5000 is used by AirPlay Receiver on macOS - asks the OS for any free port so
+    the panel always starts instead of crashing with "address already in use".
+    '''
+    import socket
+    requested = os.environ.get("PORT", "").strip()
+    if requested.isdigit():
+        return int(requested)
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        try:
+            probe.bind(("127.0.0.1", preferred))
+            return preferred
+        except OSError:
+            pass
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
 if __name__ == '__main__':
     # SECURITY: localhost only, debug OFF. This app handles credentials.
-    app.run(host="127.0.0.1", port=5000, debug=False)
+    port = _resolve_port(5000)
+    url = "http://127.0.0.1:%d" % port
+    print(
+        "\n  Control panel ready at:  %s\n"
+        "  Keep this window open while you use the tool; close it to stop.\n" % url,
+        flush=True,
+    )
+    # The launcher scripts set PANEL_OPEN_BROWSER=1 so the browser opens itself,
+    # to the right port, cross-platform. Running `python app.py` by hand won't.
+    if os.environ.get("PANEL_OPEN_BROWSER", "").strip() not in ("", "0", "false", "False"):
+        import threading
+        import webbrowser
+        threading.Timer(1.5, lambda: webbrowser.open(url)).start()
+    app.run(host="127.0.0.1", port=port, debug=False)
