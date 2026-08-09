@@ -1,19 +1,19 @@
-# Past contributors to contact for retroactive CLA consent
+# Past contributors — MIT relicense consent tracking
 
-> ## ⚠️ TEMPLATE / WORKING DOCUMENT — NOT LEGAL ADVICE
+> ## ⚠️ WORKING DOCUMENT — NOT LEGAL ADVICE
 >
-> This list supports the effort to ask **past** contributors to confirm that the
-> project's [Contributor License Agreement](../../CLA.md) applies to their
-> already-merged contributions. It is a working record, not legal advice. Have a
-> lawyer confirm the approach before relying on any consent collected here.
+> This list supports the effort to ask **past** external contributors whether they're
+> okay with their already-merged contribution being included when the project moves
+> from AGPL-3.0 to MIT. It is a working record, not legal advice.
 
 ## Purpose
 
-The project historically had **no CLA**. This file lists the **external** past
-contributors (everyone except the maintainer, Sai Vignesh Golla / `GodsScion`) whose
-already-merged work we want covered by [`CLA.md`](../../CLA.md). Use the
-[outreach email](outreach-email.md) to contact each person and the
-[retroactive consent form](retroactive-consent.md) to record their agreement.
+The project is relicensing from AGPL-3.0 to MIT. This file lists the **external**
+past contributors (everyone except the maintainer, Sai Vignesh Golla / `GodsScion`)
+whose already-merged work needs their OK first. Contact each person directly (e.g.
+Discord, GitHub PR comment, or email) and ask a plain question: are they fine with
+their contribution being relicensed under MIT. Record their reply — a screenshot or
+copy of a clear "yes"/"no" is enough — in the Outreach tracking table below.
 
 ## How this list was derived (evidence)
 
@@ -49,7 +49,7 @@ receiving the grant, not a party to contact.
 | 1 | **Karthik Sarode** | [`WINDY-WINDWARD`](https://github.com/WINDY-WINDWARD) | karthik.sarode23@gmail.com | 7 | #46 | Yes | Flask app + "Applied Jobs history" web UI (`app.py`, `templates/index.html`); fuzzy-logic matching for location-based questions (`runAiBot.py`); related README updates. |
 | 2 | **Dheeraj Deshwal** | [`Dheeraj9811`](https://github.com/Dheeraj9811) | dheeraj20194@iiitd.ac.in; dheerajdeshwal9811@gmail.com | 5 | #40, #41 | Yes | "Answer unknown questions using AI" / user-information feature (`runAiBot.py`, `config/questions.py`, `modules/ai/prompts.py`, `modules/ai/openaiConnections.py`); AI skill-extraction & multi-select double-click bug fix (`modules/clickers_and_finders.py`). |
 | 3 | **Yang Li** | [`MARKYangL`](https://github.com/MARKYangL) | tendernesscurtain@gmail.com | 1 | #50 | Yes | DeepSeek AI integration (`modules/ai/deepseekConnections.py`) plus related feature hooks in `runAiBot.py`, `modules/validator.py`, `modules/ai/prompts.py`, `config/secrets.py`. |
-| 4 | **Tim L** | [`tulXoro`](https://github.com/tulXoro) | tulxoro@hotmail.com | 5 | #63, #65 | Yes | Refactor for multi-LLM compatibility / removing DeepSeek-specific assumptions (`config/secrets.py`, `modules/ai/openaiConnections.py`, `modules/ai/deepseekConnections.py`, `modules/validator.py`). |
+| 4 | **Tim L** | [`tozeon`](https://github.com/tozeon) **(handle corrected — `tulXoro` no longer exists)** | tulxoro@hotmail.com (unverified, may be stale) | 5 | #63, #65 | Yes | Refactor for multi-LLM compatibility / removing DeepSeek-specific assumptions (`config/secrets.py`, `modules/ai/openaiConnections.py`, `modules/ai/deepseekConnections.py`, `modules/validator.py`). |
 | 5 | **Iliya Brook** | [`IliyaBrook`](https://github.com/IliyaBrook) | iliyabrook1987@gmail.com | 5 | #96 | No | Fallback "Easy Apply" detection via URL pattern (`openSDUIApplyFlow`) in `runAiBot.py`. |
 | 6 | **ArshCypherZ** | [`ArshCypherZ`](https://github.com/ArshCypherZ) | weebarsh@protonmail.com | 3 | #61 | No | Google Gemini support (`modules/ai/geminiConnections.py`, `test_gemini.py`); date-parsing fixes; OpenAI positional-argument fix (`runAiBot.py`, `modules/validator.py`, `config/secrets.py`). |
 | 7 | **Jason Fry** | [`tillydray`](https://github.com/tillydray) **(confirm)** | small.job8148@fastmail.com | 1 | #43 | No | Made the LLM `temperature` parameter optional (`modules/ai/openaiConnections.py`). |
@@ -61,8 +61,8 @@ receiving the grant, not a party to contact.
 
 ## Outreach tracking
 
-Fill this in as you contact people. Consent is recorded via
-[`retroactive-consent.md`](retroactive-consent.md).
+Fill this in as you contact people. Keep a copy (screenshot or pasted text) of each
+"yes"/"no" reply somewhere alongside this table.
 
 | # | Name | Contacted (date) | Method | Consent received (date) | Notes |
 |---|------|------------------|--------|-------------------------|-------|
@@ -77,10 +77,10 @@ Fill this in as you contact people. Consent is recorded via
 | 9 | M4NU5 |  |  |  |  |
 | 10 | yeswanthmaturi |  |  |  |  |
 
-## Open questions for the lawyer
+## Open questions
 
-- Is retroactive consent from every past contributor **required** to relicense, or is
-  it a risk-reduction step? What happens for contributors who do not respond?
+- What happens for contributors who do not respond — rewrite/remove their code, or
+  leave it out of the MIT release and keep it AGPL-only?
 - For contributions too small to be independently copyrightable (e.g. a 2-line fix),
   is consent needed at all?
 - Does the existing in-code **attestation** create any expectation or obligation
