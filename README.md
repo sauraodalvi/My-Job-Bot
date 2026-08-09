@@ -11,6 +11,7 @@ Click on above image to watch the demo or use this link https://youtu.be/gMbB1fW
 - [Introduction](#linkedin-ai-auto-job-applier-)
 - [Demo Video](#%EF%B8%8F-see-it-in-action)
 - [Index](#-content)
+- [Easy start (recommended)](#-easy-start-recommended)
 - [Install](#%EF%B8%8F-how-to-install)
 - [Configure](#-how-to-configure)
 - [Contributor Guidelines](#‍-contributor-guidelines)
@@ -20,6 +21,27 @@ Click on above image to watch the demo or use this link https://youtu.be/gMbB1fW
 - [License](#%EF%B8%8F-license)
 - [Socials](#-socials)
 - [Support and Discussions](#-community-support-and-discussions)
+
+<br>
+
+## 🚀 Easy start (recommended)
+
+New here, or not comfortable editing code? Use the built-in control panel. You set everything up in your web browser and run the tool with a button - no editing Python files, no terminal commands.
+
+1. **Install Python once.** Get it from https://www.python.org/downloads/ (on Windows, tick **"Add Python to PATH"** during install). You also need [Google Chrome](https://www.google.com/chrome).
+2. **Download this project** (green "Code" button → "Download ZIP", then unzip; or clone it).
+3. **Double-click the launcher for your system:**
+    - **macOS:** `start.command`
+    - **Windows:** `start.bat`
+    - **Linux:** `start.sh` (run `./start.sh` in a terminal)
+
+    The first run sets things up automatically (it may take a minute). After that it's quick.
+4. Your browser opens the **control panel** at `http://127.0.0.1:5000`. Fill in the tabs - **Account, Profile, Search, Filters, Run settings** - and click **Save**.
+5. Go to the **Run** tab and click **Start**. A Chrome window opens and begins applying - keep it in the foreground. You can watch progress in the log and click **Stop** any time.
+
+Everything stays on your own computer: your details are saved locally in `user_config.json` (never uploaded), and the control panel is reachable only from this machine. If you prefer the classic setup, the manual steps below still work exactly as before.
+
+[back to index](#-content)
 
 <br>
 
