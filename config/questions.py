@@ -162,4 +162,9 @@ Your support, whether through donations big or small or simply spreading the wor
 Gratefully yours 🙏🏻,
 Sai Vignesh Golla
 '''
+
+# --- Load user settings saved by the local control panel (user_config.json).
+# --- No-op if that file is absent: values fall back to the defaults above.
+from config import _overrides as _o
+_o.apply(__name__, globals())
 ############################################################################################################
