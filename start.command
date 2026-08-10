@@ -43,11 +43,12 @@ if [ ! -f ".venv/.deps_installed" ]; then
     touch ".venv/.deps_installed"
 fi
 
-# 4) Open the browser shortly after the server starts.
-( sleep 2; open "http://127.0.0.1:5000" >/dev/null 2>&1 ) &
+# 4) Start the control panel. It chooses a free port (port 5000 is used by
+#    AirPlay on macOS), prints the address, and opens your browser to it.
+export PANEL_OPEN_BROWSER=1
 
 echo ""
-echo "Opening the control panel in your browser at http://127.0.0.1:5000"
+echo "Starting the control panel and opening it in your browser..."
 echo "Keep this window open while you use the tool. Close it to stop the server."
 echo ""
 
