@@ -1,7 +1,7 @@
 '''
 Author:     Sai Vignesh Golla
-License:    GNU Affero General Public License
-            https://www.gnu.org/licenses/agpl-3.0.en.html
+License:    MIT License
+            https://opensource.org/license/mit
 GitHub:     https://github.com/GodsScion/Auto_job_applier_linkedIn
 
 Describes every user-editable setting that the local control panel (app.py +
@@ -109,12 +109,6 @@ SCHEMA = [
             # --- advanced AI plumbing ---
             _f("Account", "secrets", "llm_api_url", "AI API URL", "text",
                "The address of your AI service. Examples: https://api.openai.com/v1/ , http://localhost:1234/v1/ , https://api.deepseek.com . Keep the trailing slash. You may not need this for Gemini.",
-               ai=True, advanced=True),
-            _f("Account", "secrets", "llm_spec", "AI API type", "select",
-               "How the tool talks to the model. Most services work with 'openai'. Only change this if your provider needs a different protocol.",
-               options=["openai", "openai-like", "deepseek", "gemini"], ai=True, advanced=True),
-            _f("Account", "secrets", "stream_output", "Stream AI output", "bool",
-               "Show the AI's answer as it is being written. Off is a little faster; on feels more responsive.",
                ai=True, advanced=True),
             _f("Account", "settings", "showAiErrorAlerts", "Show AI error alerts", "bool",
                "Pop up an alert if there's a problem connecting to the AI service.",

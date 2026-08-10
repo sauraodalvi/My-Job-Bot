@@ -1,8 +1,8 @@
 #!/bin/bash
 #
 # Author:  Sai Vignesh Golla
-# License: GNU Affero General Public License
-#          https://www.gnu.org/licenses/agpl-3.0.en.html
+# License: MIT License
+#          https://opensource.org/license/mit
 # GitHub:  https://github.com/GodsScion/Auto_job_applier_linkedIn
 #
 # One-click launcher for macOS. Double-click this file in Finder (or run it from

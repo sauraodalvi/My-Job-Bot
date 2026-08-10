@@ -305,15 +305,11 @@ Please consider the following:
 
 ## ⚖️ License
 
-Copyright (C) 2024 Sai Vignesh Golla  <saivigneshgolla@outlook.com>
+Copyright (c) 2024-2026 Sai Vignesh Golla  <saivigneshgolla@outlook.com>
 
-This program is free software: you can redistribute it and/or modify it under the terms of the GNU Affero General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+This project is licensed under the **MIT License**. You are free to use, copy, modify, and distribute it — including in commercial and closed-source work — as long as the copyright notice and permission notice are preserved. It is provided "as is", without warranty of any kind.
 
-This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for more details.
-
-You should have received a copy of the GNU Affero General Public License along with this program. If not, see <https://www.gnu.org/licenses/>.
-
-See [AGPLv3 LICENSE](LICENSE) for more info.
+Releases before August 2026 were licensed under the AGPL-3.0. See [`NOTICE`](NOTICE) for the relicensing history, and the [`LICENSE`](LICENSE) file for the full MIT text.
 
 
 <br>

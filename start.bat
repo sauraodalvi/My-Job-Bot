@@ -1,8 +1,8 @@
 @echo off
 REM
 REM Author:  Sai Vignesh Golla
-REM License: GNU Affero General Public License
-REM          https://www.gnu.org/licenses/agpl-3.0.en.html
+REM License: MIT License
+REM          https://opensource.org/license/mit
 REM GitHub:  https://github.com/GodsScion/Auto_job_applier_linkedIn
 REM
 REM One-click launcher for Windows. Double-click this file. It sets up everything
