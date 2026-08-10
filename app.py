@@ -1,7 +1,7 @@
 '''
 Author:     Sai Vignesh Golla
-License:    GNU Affero General Public License
-            https://www.gnu.org/licenses/agpl-3.0.en.html
+License:    MIT License
+            https://opensource.org/license/mit
 GitHub:     https://github.com/GodsScion/Auto_job_applier_linkedIn
 
 Local "control panel" web app. It lets a non-technical person configure and run
@@ -218,98 +218,74 @@ def _terminate(proc) -> None:
             pass
 
 
-##> ------ Karthik Sarode : karthik.sarode23@gmail.com - UI for excel files ------
 @app.route('/')
 def home():
-    """Renders the control panel single-page app."""
+    """Serve the control panel single-page app."""
     return render_template('control_panel.html')
 
 
 @app.route('/history')
 def history():
-    """Renders the original standalone applied-jobs history page (kept reachable)."""
+    """Serve the applied-jobs history page."""
     return render_template('index.html')
+
+
+# The applied-jobs history CSV the bot writes, and how its columns map to the JSON
+# keys the history page consumes.
+_HISTORY_CSV = 'all_applied_applications_history.csv'
+_HISTORY_FIELDS = {
+    'Job ID': 'Job_ID',
+    'Title': 'Title',
+    'Company': 'Company',
+    'HR Name': 'HR_Name',
+    'HR Link': 'HR_Link',
+    'Job Link': 'Job_Link',
+    'External Job link': 'External_Job_link',
+    'Date Applied': 'Date_Applied',
+}
 
 
 @app.route('/applied-jobs', methods=['GET'])
 def get_applied_jobs():
-    '''
-    Retrieves a list of applied jobs from the applications history CSV file.
-
-    Returns a JSON response containing a list of jobs, each with details such as
-    Job ID, Title, Company, HR Name, HR Link, Job Link, External Job link, and Date Applied.
-
-    If the CSV file is not found, returns a 404 error with a relevant message.
-    If any other exception occurs, returns a 500 error with the exception message.
-    '''
-
+    """Return the applied-jobs history as JSON for the history page."""
+    csv_path = os.path.join(PATH, _HISTORY_CSV)
+    if not os.path.exists(csv_path):
+        return jsonify({"error": "No applications history found yet."}), 404
     try:
         jobs = []
-        with open(PATH + 'all_applied_applications_history.csv', 'r', encoding='utf-8') as file:
-            reader = csv.DictReader(file)
-            for row in reader:
-                jobs.append({
-                    'Job_ID': row['Job ID'],
-                    'Title': row['Title'],
-                    'Company': row['Company'],
-                    'HR_Name': row['HR Name'],
-                    'HR_Link': row['HR Link'],
-                    'Job_Link': row['Job Link'],
-                    'External_Job_link': row['External Job link'],
-                    'Date_Applied': row['Date Applied']
-                })
+        with open(csv_path, 'r', encoding='utf-8') as f:
+            for row in csv.DictReader(f):
+                jobs.append({key: row.get(col, '') for col, key in _HISTORY_FIELDS.items()})
         return jsonify(jobs)
-    except FileNotFoundError:
-        return jsonify({"error": "No applications history found"}), 404
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
 
 @app.route('/applied-jobs/<job_id>', methods=['PUT'])
-def update_applied_date(job_id):
-    """
-    Updates the 'Date Applied' field of a job in the applications history CSV file.
-
-    Args:
-        job_id (str): The Job ID of the job to be updated.
-
-    Returns:
-        A JSON response with a message indicating success or failure of the update
-        operation. If the job is not found, returns a 404 error with a relevant
-        message. If any other exception occurs, returns a 500 error with the
-        exception message.
-    """
+def mark_job_applied(job_id):
+    """Stamp one job's 'Date Applied' (matched by Job ID) with the current time."""
+    csv_path = os.path.join(PATH, _HISTORY_CSV)
+    if not os.path.exists(csv_path):
+        return jsonify({"error": f"History file not found at {csv_path}"}), 404
     try:
-        data = []
-        csvPath = PATH + 'all_applied_applications_history.csv'
-
-        if not os.path.exists(csvPath):
-            return jsonify({"error": f"CSV file not found at {csvPath}"}), 404
-
-        # Read current CSV content
-        with open(csvPath, 'r', encoding='utf-8') as file:
-            reader = csv.DictReader(file)
-            fieldNames = reader.fieldnames
-            found = False
-            for row in reader:
-                if row['Job ID'] == job_id:
-                    row['Date Applied'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                    found = True
-                data.append(row)
-
-        if not found:
+        with open(csv_path, 'r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            columns = reader.fieldnames
+            rows = list(reader)
+        matched = False
+        for row in rows:
+            if row.get('Job ID') == job_id:
+                row['Date Applied'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                matched = True
+        if not matched:
             return jsonify({"error": f"Job ID {job_id} not found"}), 404
-
-        with open(csvPath, 'w', encoding='utf-8', newline='') as file:
-            writer = csv.DictWriter(file, fieldnames=fieldNames)
+        with open(csv_path, 'w', encoding='utf-8', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=columns)
             writer.writeheader()
-            writer.writerows(data)
-
-        return jsonify({"message": "Date Applied updated successfully"}), 200
+            writer.writerows(rows)
+        return jsonify({"message": "Date Applied updated."}), 200
     except Exception as e:
-        print(f"Error updating applied date: {str(e)}")  # Debug log
         return jsonify({"error": str(e)}), 500
-
-##<
 
 
 # ===========================================================================

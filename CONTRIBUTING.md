@@ -39,4 +39,12 @@ change is tested, it is merged into `main` in the next cycle. See
 - [ ] I added an attestation marker for my change.
 - [ ] My contribution is my own work, or I have the right to submit it.
 
+## 4. Licensing of contributions
+
+This project is licensed under the **MIT License** (see [`LICENSE`](LICENSE)). By
+opening a pull request, you agree that your contribution is your own work (or that
+you have the right to submit it) and that it is provided under the MIT License —
+that is, inbound contributions are under the same license as the project (inbound =
+outbound).
+
 Thank you for helping improve the project!
