@@ -26,6 +26,8 @@ Public interface (used by runAiBot.py):
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from typing import Optional
 
@@ -36,6 +38,8 @@ from langchain.chat_models import init_chat_model
 from langgraph.graph import StateGraph, START, END
 
 import config.secrets as cfg
+from config import _overrides as _cfg_overrides
+from config.questions import question_cache_enabled, question_cache_path
 from config.settings import showAiErrorAlerts
 from modules.helpers import print_lg, critical_error_log, convert_to_json
 from modules.ai.prompts import extract_skills_prompt, ai_answer_prompt
@@ -48,6 +52,75 @@ except Exception:  # pyautogui may be unavailable in headless environments
 
 # Whether to keep popping up AI error dialogs (disabled once the user asks to pause them).
 _alerts_enabled = bool(showAiErrorAlerts)
+
+# --- Question answer cache ----------------------------------------------------------
+# Reuses AI answers for repeated form questions across runs so we save Gemini tokens.
+_JOB_SPECIFIC_WORDS = (
+    "company", "corporate", "employer", "hiring", "job", "role", "position",
+    "vacancy", "title", "describe", "why", "interest", "passion", "motivat",
+    "qualif", "about you", "tell us", "tell me", "cover letter", "portfolio",
+    "projects", "our team", "this team",
+)
+
+
+def _question_cache_path() -> str:
+    path = question_cache_path
+    if os.path.isabs(path):
+        return path
+    return os.path.join(_cfg_overrides._root_dir(), path)
+
+
+def _load_question_cache() -> dict:
+    try:
+        with open(_question_cache_path(), "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError):
+        return {}
+
+
+def _save_question_cache(cache: dict) -> None:
+    # Keep the cache bounded: drop oldest entries beyond 500.
+    if len(cache) > 500:
+        for key in list(cache)[: len(cache) - 500]:
+            cache.pop(key, None)
+    try:
+        with open(_question_cache_path(), "w", encoding="utf-8") as f:
+            json.dump(cache, f, indent=0, ensure_ascii=False)
+    except OSError as e:
+        print_lg(f"Could not save question answer cache: {e}")
+
+
+def _question_is_cacheable(question: str) -> bool:
+    low = question.lower()
+    return not any(word in low for word in _JOB_SPECIFIC_WORDS)
+
+
+def _lookup_cached_answer(question: str, question_type: str) -> Optional[str]:
+    if not question_cache_enabled or not _question_is_cacheable(question):
+        return None
+    try:
+        cache = _load_question_cache()
+        answer = cache.get(_question_cache_key(question, question_type))
+        return answer if isinstance(answer, str) and answer else None
+    except Exception:
+        return None
+
+
+def _store_cached_answer(question: str, question_type: str, answer: str) -> None:
+    if not question_cache_enabled or not _question_is_cacheable(question) or not answer:
+        return
+    try:
+        cache = _load_question_cache()
+        cache[_question_cache_key(question, question_type)] = answer
+        _save_question_cache(cache)
+    except Exception:
+        pass
+
+
+def _question_cache_key(question: str, question_type: str) -> str:
+    normalized = " ".join(question.lower().split())
+    return hashlib.sha256(f"{normalized}|{question_type}".encode("utf-8")).hexdigest()
 
 
 def _ai_error_alert(message: str, error: Exception, title: str = "AI Error") -> None:
@@ -288,9 +361,18 @@ def answer_question(
     '''
     Generate an answer to a single application-form question.
     Returns the answer string, or "" if AI is unavailable or the call fails.
+
+    Cached answers for previously-seen questions are reused to save tokens
+    (job-specific questions are never cached).
     '''
     if not client or not question:
         return ""
+
+    cached_answer = _lookup_cached_answer(question, question_type)
+    if cached_answer is not None:
+        print_lg(f'AI answered (cached) "{question}" -> "{cached_answer}"')
+        return cached_answer
+
     try:
         final = client.answer_graph.invoke({
             "question": question,
@@ -302,6 +384,7 @@ def answer_question(
         })
         answer = final.get("answer", "") or ""
         print_lg(f'AI answered "{question}" -> "{answer}"')
+        _store_cached_answer(question, question_type, answer)
         return answer
     except Exception as e:
         _ai_error_alert("Could not generate an AI answer for a question.", e)

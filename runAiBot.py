@@ -46,6 +46,7 @@ from modules.open_chrome import *
 from modules.helpers import *
 from modules.clickers_and_finders import *
 from modules.validator import validate_config
+from modules.external_fill import fill_external_form
 
 if use_AI:
     from modules.ai.connections import create_ai_client, extract_skills, answer_question, close_ai_client
@@ -845,17 +846,22 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
 
 
 
-def external_apply(pagination_element: WebElement, job_id: str, job_link: str, resume: str, date_listed, application_link: str, screenshot_name: str) -> tuple[bool, str, int]:
+def external_apply(pagination_element: WebElement, job_id: str, job_link: str, resume: str, date_listed, application_link: str, screenshot_name: str, ai_client=None, job_description: str = "") -> tuple[bool, str, int, bool]:
     '''
-    Function to open new tab and save external job application links
+    Function to open new tab and save external job application links.
+
+    With `fill_external_forms` enabled it also fills the external form with
+    static + AI answers and lets the user review before finishing. Returns
+    (skip, application_link, tabs_count, submitted_by_user).
     '''
-    global tabs_count, dailyEasyApplyLimitReached
-    if easy_apply_only:
+    global tabs_count, dailyEasyApplyLimitReached, external_application_submitted
+    external_application_submitted = False
+    if easy_apply_only and not fill_external_forms:
         try:
             if "exceeded the daily application limit" in driver.find_element(By.CLASS_NAME, "artdeco-inline-feedback__message").text: dailyEasyApplyLimitReached = True
         except: pass
         print_lg("Easy apply failed I guess!")
-        if pagination_element != None: return True, application_link, tabs_count
+        if pagination_element != None: return True, application_link, tabs_count, False
     try:
         wait.until(EC.element_to_be_clickable((By.XPATH, ".//button[contains(@class,'jobs-apply-button') and contains(@class, 'artdeco-button--3')]"))).click() # './/button[contains(span, "Apply") and not(span[contains(@class, "disabled")])]'
         wait_span_click(driver, "Continue", 1, True, False)
@@ -864,16 +870,32 @@ def external_apply(pagination_element: WebElement, job_id: str, job_link: str, r
         driver.switch_to.window(windows[-1])
         application_link = driver.current_url
         print_lg('Got the external application link "{}"'.format(application_link))
+        if easy_apply_only and fill_external_forms:
+            print_lg("Filling the external application form (static + AI answers)...")
+            fill_external_form(driver, ai_client=ai_client, job_description=job_description)
+            if pause_before_submit and not run_in_background:
+                decision = pyautogui.confirm(
+                    'The bot filled the application form on the external site.\n'
+                    '1. REVIEW every answer now.\n'
+                    '2. If anything looks wrong, edit it on the page directly.\n'
+                    '3. Submit the form yourself if it looks right.\n\n'
+                    'The application link is saved either way.',
+                    "Confirm external application",
+                    ["I submitted it", "Leave it open, save link", "Discard application"],
+                )
+                if decision == "Discard application":
+                    raise Exception("External application discarded by user!")
+                external_application_submitted = decision == "I submitted it"
         if close_tabs and driver.current_window_handle != linkedIn_tab: driver.close()
         driver.switch_to.window(linkedIn_tab)
-        return False, application_link, tabs_count
+        return False, application_link, tabs_count, external_application_submitted
     except Exception as e:
         # print_lg(e)
         print_lg("Failed to apply!")
         failed_job(job_id, job_link, resume, date_listed, "Probably didn't find Apply button or unable to switch tabs.", e, application_link, screenshot_name)
         global failed_count
         failed_count += 1
-        return True, application_link, tabs_count
+        return True, application_link, tabs_count, False
 
 
 
@@ -1224,7 +1246,8 @@ def apply_to_jobs(search_terms: list[str]) -> None:
                             continue
                     else:
                         # Case 2: Apply externally
-                        skip, application_link, tabs_count = external_apply(pagination_element, job_id, job_link, resume, date_listed, application_link, screenshot_name)
+                        skip, application_link, tabs_count, external_submitted = external_apply(pagination_element, job_id, job_link, resume, date_listed, application_link, screenshot_name, ai_client=(aiClient if use_AI else None), job_description=(description if isinstance(description, str) else ""))
+                        if external_submitted: date_applied = datetime.now()
                         if dailyEasyApplyLimitReached:
                             print_lg("\n###############  Daily application limit for Easy Apply is reached!  ###############\n")
                             return

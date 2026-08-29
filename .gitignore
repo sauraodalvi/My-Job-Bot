@@ -32,3 +32,6 @@ AutoJobApplier.exe
 .diag_*.err.log
 _diag_*.py
 _diag_*.html
+
+# AI question-answer cache (auto-generated, contains personal answers)
+question_answer_cache.json

@@ -54,6 +54,11 @@ salary = ""                        # "$40,000+", "$60,000+", "$80,000+", "$100,0
 
 easy_apply_only = True             # True or False, Note: True or False are case-sensitive
 
+# When a job has no Easy Apply, also try to fill its external application form
+# with our static answers + AI (uses the resume context). Requires reviewing the
+# form before you submit; the bot never clicks Submit on external forms itself.
+fill_external_forms = True         # True or False, Note: True or False are case-sensitive
+
 experience_level = []              # (multiple select) "Internship", "Entry level", "Associate", "Mid-Senior level", "Director", "Executive"
 job_type = []                      # (multiple select) "Full-time", "Part-time", "Contract", "Temporary", "Volunteer", "Internship", "Other"
 on_site = []                       # (multiple select) "On-site", "Remote", "Hybrid"

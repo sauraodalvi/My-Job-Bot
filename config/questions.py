@@ -139,6 +139,12 @@ Note: Will be treated as False if `run_in_background = True`
 # Do you want to overwrite previous answers?
 overwrite_previous_answers = False # True or False, Note: True or False are case-sensitive
 
+# Reuse AI answers for previously answered form questions (saves tokens).
+# Answers are stored per question in a local JSON file (question_answer_cache.json).
+# Job-specific questions (mentioning the company, role, etc.) are never cached.
+question_cache_enabled = True # True or False, Note: True or False are case-sensitive
+question_cache_path = "question_answer_cache.json" # Relative to project root, or an absolute path
+
 
 
 
@@ -165,4 +171,29 @@ Sai Vignesh Golla
 # --- No-op if that file is absent: values fall back to the defaults above.
 from config import _overrides as _o
 _o.apply(__name__, globals())
+
+# --- Resume context file -----------------------------------------------------
+# If a `resume_context.txt` file exists next to this project (or at the path
+# given via user_config.json "questions": {"resume_context_path": "..."}), its
+# contents are appended to `user_information_all`. This is the text the AI uses
+# to answer application questions, so put anything it needs to know there:
+# full name, work history, skills, education, location, work authorization...
+import os as _os
+
+resume_context_path = "resume_context.txt"
+_cfg_questions = _o.load_user_config().get("questions", {})
+if isinstance(_cfg_questions, dict) and _cfg_questions.get("resume_context_path"):
+    resume_context_path = _cfg_questions["resume_context_path"]
+_context_file = resume_context_path if _os.path.isabs(resume_context_path) else _os.path.join(_o._root_dir(), resume_context_path)
+if _os.path.exists(_context_file):
+    try:
+        with open(_context_file, "r", encoding="utf-8") as _f:
+            _file_context = _f.read().strip()
+        if _file_context:
+            user_information_all = (user_information_all.strip() + "\n\n" + _file_context).strip()
+            print(f"[config] Loaded resume context from '{_context_file}'.")
+    except OSError as _e:
+        print(f"[config] Could not read resume context file '{_context_file}': {_e}")
+else:
+    print(f"[config] No resume context file at '{_context_file}'. Create one for richer AI answers.")
 ############################################################################################################
