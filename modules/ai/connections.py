@@ -126,8 +126,18 @@ def create_ai_client() -> Optional[AIClient]:
             kwargs["temperature"] = temperature
 
         if provider == "google_genai":
-            if api_key and api_key.lower() != "not-needed":
-                os.environ.setdefault("GOOGLE_API_KEY", api_key)
+            usable_key = api_key if (api_key and api_key.lower() != "not-needed") else ""
+            if not usable_key:
+                usable_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY") or ""
+            if not usable_key:
+                raise ValueError(
+                    "No Google (Gemini) API key was found. Open the AI section of the "
+                    "control panel and paste a Gemini API key "
+                    "(get one free at https://aistudio.google.com/apikey) into the "
+                    "'API key' field, or set the GOOGLE_API_KEY / GEMINI_API_KEY "
+                    "environment variable, then click Start again."
+                )
+            os.environ.setdefault("GOOGLE_API_KEY", usable_key)
             model = init_chat_model(model_name, model_provider="google_genai", **kwargs)
         else:
             base_url = (getattr(cfg, "llm_api_url", "") or "").strip()

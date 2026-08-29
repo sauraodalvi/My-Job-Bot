@@ -16,11 +16,18 @@ fully working for existing users.
 
 import os
 import json
+import sys
+
+
+def _root_dir() -> str:
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 
 # This file lives in <project_root>/config/, so the project root is one level up.
-_CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))
-_ROOT_DIR = os.path.dirname(_CONFIG_DIR)
-USER_CONFIG_PATH = os.path.join(_ROOT_DIR, "user_config.json")
+_USER_ROOT = _root_dir()
+USER_CONFIG_PATH = os.path.join(_USER_ROOT, "user_config.json")
 
 
 def load_user_config() -> dict:

@@ -159,7 +159,10 @@ _bot_lock = threading.Lock()
 
 def _bot_command():
     '''The command used to launch the bot. Isolated so tests can monkeypatch it.'''
-    return [sys.executable, os.path.join(ROOT, "runAiBot.py")]
+    # "-X utf8" makes print()/stdout use UTF-8 regardless of the console code
+    # page, so job titles/descriptions with non-ASCII glyphs can never crash the
+    # bot with a cp1252 UnicodeEncodeError.
+    return [sys.executable, "-u", "-X", "utf8", os.path.join(ROOT, "runAiBot.py")]
 
 
 def _is_running() -> bool:

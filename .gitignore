@@ -18,3 +18,17 @@ apikeys.py
 user_config.json
 .bot_run.log
 .bot_run.pid
+
+# Built artifact
+AutoJobApplier.exe
+/build/
+/dist/
+*.spec
+
+# Bot run & diagnostic artifacts
+.bot_run.out.log
+.bot_run.err.log
+.diag_*.log
+.diag_*.err.log
+_diag_*.py
+_diag_*.html

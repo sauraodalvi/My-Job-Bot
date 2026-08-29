@@ -21,6 +21,7 @@ import os
 import sys
 import json
 import pathlib
+import traceback
 
 from time import sleep
 from random import randint
@@ -54,10 +55,47 @@ def get_default_temp_profile() -> str:
     # Thanks to https://github.com/vinodbavage31 for suggestion!
     home = pathlib.Path.home()
     if sys.platform.startswith('win'):
-        return "--user-data-dir=C:\\temp\\auto-job-apply-profile"
+        return "C:\\temp\\auto-job-apply-profile"
     elif sys.platform.startswith('linux'):
         return str(home / ".auto-job-apply-profile")
     return str(home / "Library" / "Application Support" / "Google" / "Chrome" / "auto-job-apply-profile")
+
+
+
+def get_chrome_major_version() -> int | None:
+    '''Detects the installed Google Chrome major version.'''
+    try:
+        import subprocess
+        if sys.platform.startswith('win'):
+            candidates = [
+                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+                os.path.expandvars(r"%LocalAppData%\Google\Chrome\Application\chrome.exe")
+            ]
+            for p in candidates:
+                if os.path.exists(p):
+                    out = subprocess.check_output(
+                        ['powershell', '-NoProfile', '-Command', f'(Get-Item "{p}").VersionInfo.ProductVersion'],
+                        text=True, stderr=subprocess.DEVNULL
+                    ).strip()
+                    if out and out[0].isdigit():
+                        return int(out.split('.')[0])
+        elif sys.platform.startswith('darwin'):
+            out = subprocess.check_output(
+                ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '--version'],
+                text=True, stderr=subprocess.DEVNULL
+            ).strip()
+            for part in out.split():
+                if part and part[0].isdigit():
+                    return int(part.split('.')[0])
+        elif sys.platform.startswith('linux'):
+            out = subprocess.check_output(['google-chrome', '--version'], text=True, stderr=subprocess.DEVNULL).strip()
+            for part in out.split():
+                if part and part[0].isdigit():
+                    return int(part.split('.')[0])
+    except Exception:
+        pass
+    return None
 
 
 def find_default_profile_directory() -> str | None:
@@ -103,9 +141,11 @@ def find_default_profile_directory() -> str | None:
 #< Logging related
 def critical_error_log(possible_reason: str, stack_trace: Exception) -> None:
     '''
-    Function to log and print critical errors along with datetime stamp
+    Function to log and print critical errors along with datetime stamp.
+    Includes the full traceback so the failing line is never lost.
     '''
-    print_lg(possible_reason, stack_trace, datetime.now(), from_critical=True)
+    details = "".join(traceback.format_exception(type(stack_trace), stack_trace, stack_trace.__traceback__))
+    print_lg(possible_reason, details.strip(), datetime.now(), from_critical=True)
 
 
 def get_log_path():
@@ -123,20 +163,49 @@ def get_log_path():
 __logs_file_path = get_log_path()
 
 
+def _safe_print(text: str, end: str = "\n", flush: bool = False) -> None:
+    '''
+    Print to console without crashing when the console encoding can't represent
+    some characters (e.g. cp1252 terminals hitting arrows/latin-1 glyphs).
+    '''
+    try:
+        print(text, end=end, flush=flush)
+    except UnicodeEncodeError:
+        try:
+            stream = sys.stdout
+            if hasattr(stream, "buffer"):
+                stream.buffer.write(text.encode("utf-8", errors="replace"))
+                stream.buffer.write(end.encode("utf-8"))
+                if flush:
+                    stream.buffer.flush()
+                return
+        except Exception:
+            pass
+        try:
+            print(text.encode("ascii", errors="replace").decode("ascii"), end=end, flush=flush)
+        except Exception:
+            pass
+
+
 def print_lg(*msgs: str | dict, end: str = "\n", pretty: bool = False, flush: bool = False, from_critical: bool = False) -> None:
     '''
     Function to log and print. **Note that, `end` and `flush` parameters are ignored if `pretty = True`**
+    Console printing is encoding-safe; only a failing log-file write raises the
+    "log.txt is open" dialog (never a mere console-encoding hiccup).
     '''
-    try:
-        for message in msgs:
-            pprint(message) if pretty else print(message, end=end, flush=flush)
+    for i, message in enumerate(msgs):
+        text = repr(message) if pretty else str(message)
+        chunk_end = end if i == len(msgs) - 1 else ""
+        _safe_print(text, chunk_end, flush)
+        try:
             with open(__logs_file_path, 'a+', encoding="utf-8") as file:
-                file.write(str(message) + end)
-    except Exception as e:
-        trail = f'Skipped saving this message: "{message}" to log.txt!' if from_critical else "We'll try one more time to log..."
-        alert(f"log.txt in {logs_folder_path} is open or is occupied by another program! Please close it! {trail}", "Failed Logging")
-        if not from_critical:
-            critical_error_log("Log.txt is open or is occupied by another program!", e)
+                file.write(text + chunk_end)
+        except Exception as e:
+            if not from_critical:
+                try:
+                    alert(f"log.txt in {logs_folder_path} is open or is occupied by another program! Please close it and re-run! (Could not save a log entry: {e})", "Failed Logging")
+                except Exception:
+                    pass
 #>
 
 
@@ -159,21 +228,34 @@ def buffer(speed: int=0) -> None:
         return sleep(randint(18,round(speed)*10)*0.1)
     
 
-def manual_login_retry(is_logged_in: callable, limit: int = 2) -> None:
+def manual_login_retry(is_logged_in: callable, limit: int = 60) -> None:
     '''
-    Function to ask and validate manual login
+    Ask and validate manual login. Polls automatically; pops a native alert so
+    the user notices, and raises if login is still not detected after the wait
+    (instead of silently running the bot while logged out).
     '''
-    count = 0
-    while not is_logged_in():
-        from pyautogui import alert
-        print_lg("Seems like you're not logged in!")
-        button = "Confirm Login"
-        message = 'After you successfully Log In, please click "{}" button below.'.format(button)
-        if count > limit:
-            button = "Skip Confirmation"
-            message = 'If you\'re seeing this message even after you logged in, Click "{}". Seems like auto login confirmation failed!'.format(button)
-        count += 1
-        if alert(message, "Login Required", button) and count > limit: return
+    print_lg("Waiting for LinkedIn login... If you see a security check / captcha or login form in Chrome, please complete it.")
+    for i in range(limit):
+        try:
+            if is_logged_in():
+                print_lg("Login detected! Continuing...")
+                return
+        except Exception:
+            pass
+        if i >= 10 and i % 15 == 0:
+            try:
+                import pyautogui
+                pyautogui.alert(
+                    "Complete the LinkedIn login (and any verification code) in the Chrome window the bot opened, then click OK here.",
+                    "LinkedIn Login Required",
+                    "I'm logged in",
+                )
+            except Exception:
+                pass
+        sleep(2)
+    raise RuntimeError(
+        "LinkedIn login was not detected after waiting. Open the Chrome window the bot started, complete the login (or solve any captcha), then start the bot again."
+    )
 
 
 
