@@ -19,6 +19,8 @@ The bot NEVER clicks Submit on its own for external forms. With
 
 from __future__ import annotations
 
+import time
+
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import Select
 from selenium.common.exceptions import (
@@ -35,7 +37,8 @@ from modules.ai.connections import answer_question
 # Fields we must never touch.
 _SKIP_FIELD_MARKERS = (
     "password", "secret", "otp", "captcha", "recaptcha", "honeypot",
-    "csrf", "token", "authenticity", "search", "query",
+    "verify human", "csrf", "token", "authenticity", "search", "query",
+    "-hp-", "faux", "fake_", "trap",
 )
 
 # Markers that make a checkbox safe(ish) to check for the user.
@@ -70,7 +73,15 @@ def _static_answer(hint: str) -> str | None:
     if has("middle name"):
         return personals.middle_name or ""
     if has("email"):
-        return getattr(personals, "email", "") or ""
+        got = (getattr(personals, "email", "") or "").strip()
+        if not got:
+            try:
+                from config.secrets import username as _login
+                if _login and "@" in _login:
+                    got = _login
+            except Exception:
+                got = ""
+        return got
     if has("phone") or has("mobile") or has("telephone"):
         return personals.phone_number
     if has("linkedin"):
@@ -93,7 +104,7 @@ def _static_answer(hint: str) -> str | None:
         return personals.street
     if has("address"):
         return personals.street
-    if has("city"):
+    if has("city") or has("location"):
         return personals.current_city or ""
     if has("state") or has("province") or has("region"):
         return personals.state
@@ -270,6 +281,8 @@ def _fill_controls_in_context(driver, ai_client, job_description: str) -> dict:
 
             if not el.is_enabled():
                 continue
+            if kind in ("select", "text", "textarea") and not el.is_displayed():
+                continue
 
             name_attr = _norm(el.get_attribute("name") or "")
             ident = _norm(el.get_attribute("aria-label") or "")
@@ -409,31 +422,86 @@ def _collect_frames(driver, depth: int = 2) -> list[list]:
     return paths
 
 
-def fill_external_form(driver, ai_client=None, job_description: str = "") -> dict:
+_ADVANCE_TERMS = ("continue", "next", "save and continue", "save & continue", "proceed", "go to")
+_SUBMIT_TERMS = ("submit", " apply", "finish", "send", "done", "review")
+
+
+def _find_step_advance_button(driver):
+    '''Return the "Continue"/"Next" button for a wizard step, or None. Never a submit.'''
+    try:
+        buttons = driver.find_elements(By.XPATH, "//button")
+    except Exception:
+        return None
+    for btn in buttons:
+        try:
+            if not btn.is_displayed() or not btn.is_enabled():
+                continue
+            text = _norm(btn.text)
+            if len(text) < 2:
+                continue
+            if any(term in text for term in _SUBMIT_TERMS):
+                continue
+            if any(term in text for term in _ADVANCE_TERMS):
+                return btn
+        except StaleElementReferenceException:
+            continue
+    return None
+
+
+def _page_fingerprint(driver) -> str:
+    try:
+        return driver.execute_script(
+            "return (document.title + '|' + (document.body && document.body.innerText ? document.body.innerText.slice(0, 2000) : ''))"
+        )
+    except Exception:
+        return ""
+
+
+def fill_external_form(driver, ai_client=None, job_description: str = "", max_steps: int = 12) -> dict:
     '''
-    Fill the external job application form on the current page (including any
-    frames it uses). Returns a dict of outcome counters.
+    Fill the external job application form on the current page, walking the
+    steps of any multi-step wizard (clicking only "Continue"/"Next"). Returns a
+    dict of outcome counters.
 
     The caller is responsible for switching tabs, recording the application
     link, and (optionally) confirming before any submission.
     '''
     totals = {"filled": 0, "skipped_existing": 0, "empty": 0, "unresolved": 0}
-    contexts = [[]] + _collect_frames(driver, depth=2)
+    prev_fp = ""
 
-    for path in contexts:
-        try:
-            for frame in path:
-                driver.switch_to.frame(frame)
-            counts = _fill_controls_in_context(driver, ai_client, job_description)
-            for key in totals:
-                totals[key] += counts[key]
-        except Exception as e:
-            print_lg(f"[external_fill] Could not process a frame: {e}")
-        finally:
+    for _ in range(max_steps):
+        step_fp = _page_fingerprint(driver)
+        if prev_fp and step_fp and step_fp == prev_fp:
+            print_lg("[external_fill] Page did not change (a required field is probably missing). Stopping the wizard walk.")
+            break
+        prev_fp = step_fp
+
+        contexts = [[]] + _collect_frames(driver, depth=2)
+        for path in contexts:
             try:
-                driver.switch_to.default_content()
-            except Exception:
-                pass
+                for frame in path:
+                    driver.switch_to.frame(frame)
+                counts = _fill_controls_in_context(driver, ai_client, job_description)
+                for key in totals:
+                    totals[key] += counts[key]
+            except Exception as e:
+                print_lg(f"[external_fill] Could not process a frame: {e}")
+            finally:
+                try:
+                    driver.switch_to.default_content()
+                except Exception:
+                    pass
+
+        advance = _find_step_advance_button(driver)
+        if advance is None:
+            break
+        try:
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", advance)
+            driver.execute_script("arguments[0].click();", advance)
+            time.sleep(1.5)
+        except Exception as e:
+            print_lg(f"[external_fill] Could not advance to the next step: {e}")
+            break
 
     print_lg(
         "[external_fill] filled {} field(s) | skipped already filled {} | left unresolved {}".format(

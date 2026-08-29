@@ -123,6 +123,17 @@ def _question_cache_key(question: str, question_type: str) -> str:
     return hashlib.sha256(f"{normalized}|{question_type}".encode("utf-8")).hexdigest()
 
 
+def _is_unknown_answer(answer: str) -> bool:
+    '''
+    True when the AI failed to ground its answer in the applicant information and
+    returned the UNKNOWN marker (see modules/ai/prompts.py). Such answers are
+    never cached and are surfaced to callers as an empty string so they can
+    pause for manual input instead of submitting a hallucinated value.
+    '''
+    core = " ".join((answer or "").lower().split()).strip(".:- \"'\t\n")
+    return core in ("unknown", "i don't know", "i do not know", "n/a", "na", "not sure", "not available", "not provided")
+
+
 def _ai_error_alert(message: str, error: Exception, title: str = "AI Error") -> None:
     '''Log an AI error and (optionally) show a dismissible dialog, mirroring the rest of the tool.'''
     global _alerts_enabled
@@ -384,7 +395,10 @@ def answer_question(
         })
         answer = final.get("answer", "") or ""
         print_lg(f'AI answered "{question}" -> "{answer}"')
-        _store_cached_answer(question, question_type, answer)
+        if not _is_unknown_answer(answer):
+            _store_cached_answer(question, question_type, answer)
+        else:
+            answer = ""
         return answer
     except Exception as e:
         _ai_error_alert("Could not generate an AI answer for a question.", e)

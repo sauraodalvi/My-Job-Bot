@@ -32,7 +32,12 @@ JOB DESCRIPTION:
 ##> Answer a form question
 # Used with `ai_answer_prompt.format(user_information, question)`.
 ai_answer_prompt = """
-You are helping a job seeker fill in a job-application form. Answer the single question below the way the applicant would, in the first person, using the applicant's information whenever it is relevant.
+You are helping a job seeker fill in a job-application form. Answer the single question below the way the applicant would, in the first person, using ONLY the applicant information provided below.
+
+Grounding rules (strict):
+- ONLY use facts that appear in the applicant information below. Never invent, infer, or guess any degree, institution, dates, CGPA, employer, salary, location, or skill that is not explicitly listed.
+- If the applicant information does not contain the answer to the question, reply with exactly the token UNKNOWN (nothing else, no explanation).
+- For example, if the question asks for an education detail that is not listed, or a certification that is not listed, answer UNKNOWN.
 
 Formatting rules:
 - If the question asks for a number, a count, or years/months of experience, reply with just the number (for example: 3).
