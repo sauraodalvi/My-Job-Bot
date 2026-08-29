@@ -105,6 +105,44 @@ Cover Letter
 user_information_all = """
 User Information
 """
+
+# Education details used to answer education fields on forms without needing the AI.
+# Fill these in so education questions are answered from config instead of invented.
+education_degree = ""              # Eg: "MBA", "PGDM", "B.Tech", "B.E." or ""
+education_institution = ""         # Eg: "NLDIMSR", "Harvard University" or ""
+education_field_of_study = ""      # Eg: "Marketing", "Computer Science" or ""
+education_cgpa = ""                # Eg: "8.58", "3.8" or ""
+education_start_year = ""          # Eg: "2020" or ""
+education_end_year = ""            # Eg: "2022" or ""
+
+# Current / most-recent work experience, used to answer work-experience fields
+# on forms without needing the AI. (Past roles are in resume_context.txt.)
+work_role = ""                     # Eg: "AI Engineer", "Product Analyst" or ""
+work_company = ""                  # Eg: "FlytBase" or ""
+work_location = ""                 # Eg: "Pune, India" or ""
+work_start_date = ""               # Eg: "Apr 2026" or ""
+work_end_date = ""                 # Eg: "Present" or ""
+work_summary = ""                  # Short responsibilities / achievements. Eg: "Owned the 0-to-1 roadmap and launch of..."
+
+# Skills, used to answer skill questions on forms without needing the AI.
+# Comma-separated: Eg: "Product Roadmapping, Generative AI, SQL, Figma" or ""
+skills_summary = ""
+
+# Projects, used to answer "add a project" style sections without needing the AI.
+# Each entry: {"name": "...", "link": "...", "description": "..."} (link optional).
+# The wizard add-buttons are clicked once per project, and each card's fields
+# (name / link / description) are answered in order.
+projects_summary = []
+
+# Long-form answers for essay questions ("why this role", "tell us about something
+# you built", "a time you decided not to build"). Keyed by intent so a matching
+# textarea/essay question is answered statically without needing the AI. An empty
+# value leaves the field unresolved for the AI/pause path.
+essay_questions = {
+    "why_role": "",
+    "built_owned": "",
+    "decided_not_to_build": "",
+}
 '''
 Note: If left empty as "", the tool will not answer the question. However, note that some companies make it compulsory to be answered. Use \n to add line breaks.
 ''' 
