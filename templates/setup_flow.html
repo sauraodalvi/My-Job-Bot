@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Let's get you ready - Auto Job Applier</title>
+    <style>
+        :root {
+            --bg: #f6f8fb;
+            --panel: #ffffff;
+            --text: #1f2933;
+            --muted: #6b7280;
+            --accent: #1a7f37;
+            --accent-dark: #16612b;
+            --danger: #d1242f;
+            --border: #e2e8f0;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: "Segoe UI", system-ui, sans-serif; background: var(--bg); color: var(--text); }
+        header { background: var(--panel); border-bottom: 1px solid var(--border); padding: 20px 24px; }
+        header h1 { font-size: 20px; font-weight: 600; }
+        header p { color: var(--muted); font-size: 14px; margin-top: 4px; }
+        main { max-width: 720px; margin: 28px auto; padding: 0 16px 80px; }
+        .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 28px; }
+        .step-label { color: var(--muted); font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+        .welcome h2 { font-size: 26px; font-weight: 600; margin: 8px 0 12px; }
+        .welcome .sentence { font-size: 16px; line-height: 1.5; margin-bottom: 18px; }
+        .welcome ul { list-style: none; margin-bottom: 16px; }
+        .welcome li { padding: 4px 0; color: var(--text); font-size: 15px; }
+        .welcome li::before { content: "•"; color: var(--accent); font-weight: 700; margin-right: 8px; }
+        .note { color: var(--muted); font-size: 13px; line-height: 1.5; }
+        .hint { color: var(--muted); font-size: 13px; margin-top: 4px; }
+        .error { color: var(--danger); font-size: 14px; margin-top: 10px; }
+        .field { margin: 18px 0; }
+        .field label { display: block; font-weight: 600; font-size: 14px; margin-bottom: 6px; }
+        .field .req { color: var(--danger); }
+        input[type="text"], textarea { width: 100%; padding: 10px 12px; font-size: 15px; border: 1px solid var(--border); border-radius: 8px; font-family: inherit; }
+        textarea { min-height: 110px; resize: vertical; }
+        .yesno { display: flex; gap: 10px; }
+        .yesno label { font-weight: normal; border: 1px solid var(--border); border-radius: 8px; padding: 10px 16px; cursor: pointer; font-size: 15px; flex: 1; text-align: center; }
+        .yesno input { display: none; }
+        .yesno label:has(input:checked) { border-color: var(--accent); background: #f0fdf4; }
+        .summary { background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 10px; padding: 16px 20px; }
+        .summary h3 { color: var(--accent-dark); font-size: 16px; margin-bottom: 8px; }
+        .summary ul { list-style: none; }
+        .summary li { padding: 3px 0; font-size: 15px; }
+        .buttons { display: flex; justify-content: space-between; margin-top: 26px; gap: 12px; }
+        button { padding: 11px 22px; font-size: 15px; font-weight: 600; border-radius: 8px; border: none; cursor: pointer; }
+        .btn-primary { background: var(--accent); color: #fff; }
+        .btn-primary:hover { background: var(--accent-dark); }
+        .btn-ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+        a.back { color: var(--muted); text-decoration: none; font-size: 14px; display: inline-block; margin-top: 18px; }
+        .dot-group { text-align: center; margin-top: 18px; }
+        .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #cbd5e1; margin: 0 4px; }
+        .dot.active { background: var(--accent); }
+        .done { text-align: center; padding: 12px 0; }
+        .done h2 { font-size: 24px; margin-bottom: 10px; }
+        .done .btn { display: inline-block; margin-top: 18px; }
+    </style>
+</head>
+<body>
+    <header>
+        <h1 id="flowTitle">Let's get you ready</h1>
+        <p>This runs right on your computer. Nothing is uploaded.</p>
+    </header>
+
+    <main>
+        <div class="card" id="view"></div>
+        <a class="back" id="backLink" href="/">← Back to control panel</a>
+    </main>
+
+    <script>
+        var FLOW = null;       // the shared declaration
+        var ANSWERS = {};      // current answers (prefill from server, then captured per step)
+        var STEP_IDS = [];
+        var views = [];        // "welcome" + steps + "summary"
+
+        function el(tag, attrs, children) {
+            var node = document.createElement(tag);
+            (attrs || []).forEach(function (a) { node.setAttribute(a[0], a[1]); });
+            (children || []).forEach(function (c) { if (c) node.appendChild(c); });
+            return node;
+        }
+
+        function stepById(id) {
+            return FLOW.steps.filter(function (s) { return s.id === id; })[0];
+        }
+
+        function fieldValue(stepId, key) {
+            if (ANSWERS[stepId] && ANSWERS[stepId][key] !== undefined && ANSWERS[stepId][key] !== null) return ANSWERS[stepId][key];
+            return "";
+        }
+
+        // ---- rendering ----
+        function renderWelcome() {
+            var card = el("div", [["class", "welcome"]]);
+            card.appendChild(el("div", [["class", "step-label"]], ["Step 0 of " + (STEP_IDS.length + 1)]));
+            card.appendChild(el("h2", [], [FLOW.title]));
+            card.appendChild(el("p", [["class", "sentence"]], [FLOW.welcome_sentence]));
+            var ul = el("ul", []);
+            FLOW.welcome_notes.forEach(function (line) { ul.appendChild(el("li", [], [line])); });
+            card.appendChild(ul);
+            return card;
+        }
+
+        function renderStep(step, num) {
+            var card = el("div", []);
+            card.appendChild(el("div", [["class", "step-label"]], ["Step " + num + " of " + (STEP_IDS.length + 1)]));
+            card.appendChild(el("h2", [], [step.title]));
+            card.appendChild(el("p", [["class", "hint"]], [step.why]));
+
+            step.fields.forEach(function (f) {
+                var wrap = el("div", [["class", "field"]]);
+                var label = el("label", [], [f.label, f.required ? el("span", [["class", "req"]], [" *"]) : null]);
+                wrap.appendChild(label);
+                var current = fieldValue(step.id, f.key);
+                if (f.type === "textarea") {
+                    var ta = el("textarea", [["id", step.id + "__" + f.key], ["placeholder", f.label]]);
+                    ta.value = current;
+                    wrap.appendChild(ta);
+                } else if (f.type === "yesno") {
+                    var yesno = el("div", [["class", "yesno"]]);
+                    var opts = [
+                        { value: true, text: f.yes_label || "Yes" },
+                        { value: false, text: f.no_label || "No" }
+                    ];
+                    opts.forEach(function (opt) {
+                        var l = el("label", []);
+                        var inp = el("input", [["type", "radio"], ["name", step.id + "__" + f.key], ["id", step.id + "__" + f.key + "__" + opt.value]]);
+                        inp.value = opt.value;
+                        var selected = String(current) === String(opt.value) ||
+                            (String(current) === "" && opt.value === true && f.default === true);
+                        if (selected) inp.checked = true;
+                        l.appendChild(inp);
+                        l.appendChild(el("span", [], [opt.text]));
+                        yesno.appendChild(l);
+                    });
+                    wrap.appendChild(yesno);
+                } else {
+                    var txt = el("input", [["type", "text"], ["id", step.id + "__" + f.key], ["placeholder", f.label]]);
+                    txt.value = current;
+                    wrap.appendChild(txt);
+                }
+                if (f.help) wrap.appendChild(el("p", [["class", "hint"]], [f.help]));
+                card.appendChild(wrap);
+            });
+            if (step.id === "resume") {
+                card.appendChild(el("div", [["id", "resume-detect"]]));
+                var resumeInp = document.getElementById("resume__resume_path");
+                if (resumeInp) resumeInp.addEventListener("change", refreshDetect);
+                refreshDetect();
+            }
+            if (step.id === "wants") {
+                card.appendChild(el("div", [["id", "wants-parse"]]));
+            }
+            return card;
+        }
+
+        function captureStep(step) {
+            var out = {};
+            step.fields.forEach(function (f) {
+                var node = document.getElementById(step.id + "__" + f.key);
+                if (!node) {
+                    out[f.key] = fieldValue(step.id, f.key);
+                    return;
+                }
+                if (f.type === "yesno") {
+                    var checked = document.querySelector('input[name="' + step.id + "__" + f.key + '"]:checked');
+                    out[f.key] = checked ? checked.value === "true" : false;
+                } else {
+                    out[f.key] = node.value.trim();
+                }
+            });
+            return out;
+        }
+
+        function renderSummary() {
+            var card = el("div", []);
+            card.appendChild(el("div", [["class", "step-label"]], ["Last step"]));
+            card.appendChild(el("h2", [], ["Here's everything you told me"]));
+            card.appendChild(el("p", [["class", "hint"]], ["Please have a quick look before we save."]));
+
+            var box = el("div", [["class", "summary"]]);
+            box.appendChild(el("h3", [], ["What I'll do for you"]));
+            var ul = el("ul", []);
+            var resumePath = fieldValue('resume', 'resume_path');
+            var wants = ANSWERS.wants || {};
+            var resumeProfile = ANSWERS.resume && ANSWERS.resume.profile_text ? ANSWERS.resume.profile_text : "";
+            var wantsText = (wants.parsed && wants.parsed.confirmation) ? wants.parsed.confirmation : (wants.sentence || "");
+            var ask = ANSWERS.policy ? ANSWERS.policy.ask_before_sending : true;
+            var resumeLine = "Resume: " + (resumePath ? String(resumePath).split(/[\\\/]/).pop() : 'not added yet');
+            if (resumeProfile) resumeLine += " (I read: " + resumeProfile + ")";
+            [
+                resumeLine,
+                "I'll look for: " + (wantsText || 'nothing yet'),
+                (ask === false ? "I'll send applications without asking first." : "Before anything is sent, I'll ask you first.")
+            ].forEach(function (line) { ul.appendChild(el("li", [], [line])); });
+            box.appendChild(ul);
+            card.appendChild(box);
+            return card;
+        }
+
+        function showErrors(errors) {
+            var existing = document.getElementById("errors");
+            if (existing) existing.remove();
+            var msgs = [];
+            for (var stepId in errors) {
+                errors[stepId].forEach(function (m) { msgs.push(m); });
+            }
+            if (!msgs.length) return;
+            var view = document.getElementById("view");
+            view.appendChild(el("div", [["class", "error"], ["id", "errors"]], [msgs.join(" ")]));
+        }
+
+        function rebuildButtons(idx) {
+            var view = document.getElementById("view");
+            if (document.getElementById("flow-buttons")) document.getElementById("flow-buttons").remove();
+            if (document.getElementById("errors")) document.getElementById("errors").remove();
+            if (document.getElementById("flow-dots")) document.getElementById("flow-dots").remove();
+
+            var btns = el("div", [["class", "buttons"], ["id", "flow-buttons"]]);
+            if (idx > 0) {
+                btns.appendChild(el("button", [["class", "btn-ghost"], ["type", "button"], ["onclick", "goTo(" + (idx - 1) + ")"]], ["← Back"]));
+            }
+            if (views[idx] === "summary") {
+                btns.appendChild(el("button", [["class", "btn-primary"], ["type", "button"], ["onclick", "finish()"]], ["Finish"]));
+            } else if (views[idx] === "welcome") {
+                btns.appendChild(el("button", [["class", "btn-primary"], ["type", "button"], ["onclick", "goTo(1)"]], ["Let's go →"]));
+            } else {
+                btns.appendChild(el("button", [["class", "btn-primary"], ["type", "button"], ["onclick", "next()"]], ["Next →"]));
+            }
+            view.appendChild(btns);
+
+            var dots = el("div", [["class", "dot-group"], ["id", "flow-dots"]]);
+            views.forEach(function (id, i) {
+                dots.appendChild(el("span", [["class", "dot" + (i === idx ? " active" : "")]]));
+            });
+            view.appendChild(dots);
+        }
+
+        // ---- live helpers: resume detection + wants Saved Search parse ----
+        var WANTS_STATE = null;        // active guided/clarify conversation
+        var WANTS_PARSED_SENTENCE = "";
+
+        function refreshDetect() {
+            var area = document.getElementById("resume-detect");
+            if (!area) return;
+            var path = fieldValue("resume", "resume_path");
+            if (!path) { area.innerHTML = ""; return; }
+            fetch('/api/setup/detect', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: path })
+            }).then(function (r) { return r.json(); }).then(function (d) {
+                area.innerHTML = "";
+                var color = d.ok ? "#1a7f37" : "#a16207";
+                if (!ANSWERS.resume) ANSWERS.resume = {};
+                ANSWERS.resume.profile_text = d.ok ? d.text : "";
+                area.appendChild(el("p", [["class", "hint"], ["style", "color:" + color + ";font-weight:600;margin-top:10px"]], [d.text]));
+            });
+        }
+
+        function parseReq(sentence, reply, onDone) {
+            fetch('/api/setup/parse', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sentence: sentence, reply: reply, guided_state: WANTS_STATE })
+            }).then(function (r) { return r.json(); }).then(function (out) {
+                if (typeof onDone === "function") onDone(out);
+                else renderWantsOutcome(out, sentence);
+            });
+        }
+
+        function renderWantsOutcome(out, sentence) {
+            var area = document.getElementById("wants-parse");
+            if (!area) return;
+            area.innerHTML = "";
+            if (!ANSWERS.wants) ANSWERS.wants = {};
+            ANSWERS.wants.sentence = sentence;
+            if (out.status === "answered") {
+                var parsed = out.wants_answers.parsed;
+                parsed.confirmation = out.confirmation;
+                ANSWERS.wants.parsed = parsed;
+                WANTS_STATE = null;
+                WANTS_PARSED_SENTENCE = sentence;
+                area.appendChild(el("p", [["class", "hint"], ["style", "color:#1a7f37;font-weight:600;margin-top:10px"]], ["I understood: " + out.confirmation]));
+            } else {
+                WANTS_STATE = out.guided_state;
+                WANTS_PARSED_SENTENCE = "";
+                delete ANSWERS.wants.parsed;
+                area.appendChild(el("p", [["class", "hint"], ["style", "color:#a16207;font-weight:600;margin-top:10px"]], [out.question]));
+                var reply = el("input", [["type", "text"], ["id", "wants-reply"], ["placeholder", "Your answer in plain words"]]);
+                reply.style.marginTop = "10px";
+                var btn = el("button", [["type", "button"], ["class", "btn-primary"], ["style", "margin-top:8px"], ["onclick", "wantsAnswer()"]], ["Answer"]);
+                area.appendChild(reply);
+                area.appendChild(btn);
+            }
+        }
+
+        function wantsAnswer() {
+            var sentence = ANSWERS.wants && ANSWERS.wants.sentence ? ANSWERS.wants.sentence : fieldValue("wants", "sentence");
+            var reply = document.getElementById("wants-reply");
+            parseReq(sentence, reply ? reply.value : null, function (out) {
+                if (out.status === "answered") renderWantsOutcome(out, sentence);
+                else renderWantsOutcome(out, sentence);
+            });
+        }
+
+        function refreshWants() {
+            var area = document.getElementById("wants-parse");
+            if (!area) return;
+            var sentence = fieldValue("wants", "sentence");
+            if (!sentence) { area.innerHTML = ""; WANTS_STATE = null; return; }
+            if (WANTS_STATE) {
+                parseReq(sentence, null, function (out) { renderWantsOutcome(out, sentence); });
+                return;
+            }
+            if (WANTS_PARSED_SENTENCE === sentence && ANSWERS.wants && ANSWERS.wants.parsed) {
+                area.innerHTML = "";
+                area.appendChild(el("p", [["class", "hint"], ["style", "color:#1a7f37;font-weight:600;margin-top:10px"]], ["I understood: " + (ANSWERS.wants.parsed.confirmation || "")]));
+                return;
+            }
+            parseReq(sentence, null, function (out) { renderWantsOutcome(out, sentence); });
+        }
+
+        function ensureParsed(cb) {
+            var sentence = fieldValue("wants", "sentence");
+            if (!sentence) { if (typeof cb === "function") cb(); return; }
+            if (ANSWERS.wants && ANSWERS.wants.parsed && ANSWERS.wants.sentence === sentence) {
+                if (typeof cb === "function") cb();
+                return;
+            }
+            parseReq(sentence, null, function (out) {
+                if (out.status === "answered") { renderWantsOutcome(out, sentence); if (typeof cb === "function") cb(); }
+                else renderWantsOutcome(out, sentence);
+            });
+        }
+
+        var currentIndex = 0;
+
+        function goTo(idx) {
+            currentIndex = idx;
+            var view = document.getElementById("view");
+            view.innerHTML = "";
+
+            if (views[idx] === "welcome") view.appendChild(renderWelcome());
+            else if (views[idx] === "summary") view.appendChild(renderSummary());
+            else view.appendChild(renderStep(stepById(views[idx]), idx));
+
+            if (views[idx] === "wants") refreshWants();
+            rebuildButtons(idx);
+            window.scrollTo(0, 0);
+        }
+
+        function next() {
+            var step = stepById(views[currentIndex]);
+            var keptParsed = ANSWERS[step.id] && ANSWERS[step.id].parsed ? ANSWERS[step.id].parsed : null;
+            ANSWERS[step.id] = captureStep(step);
+            if (keptParsed) ANSWERS[step.id].parsed = keptParsed;
+            var doAdvance = function () { goTo(currentIndex + 1); };
+            if (step.id === "wants") {
+                ensureParsed(doAdvance);
+                return;
+            }
+            fetch('/api/setup', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ answers: ANSWERS })
+            }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+              .then(function (res) {
+                if (!res.ok) { showErrors(res.data.errors || { _: [res.data.error || "Could not save yet."] }); return; }
+                ANSWERS = res.data.answers;
+                goTo(currentIndex + 1);
+              });
+        }
+
+        function finish() {
+            fetch('/api/setup', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ answers: ANSWERS })
+            }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+              .then(function (res) {
+                if (!res.ok) { showErrors(res.data.errors || { _: [res.data.error || "Could not save."] }); return; }
+                ANSWERS = res.data.answers;
+                var view = document.getElementById("view");
+                view.innerHTML = "";
+                var done = el("div", [["class", "done"]]);
+                done.appendChild(el("h2", [], ["You're all set!"]));
+                done.appendChild(el("p", [["class", "hint"]], ["Setup is complete. You can close this page and open the control panel to run the tool."]));
+
+                var nextLines = el("ul", [["class", "notes"], ["style", "text-align:left;margin:18px auto;max-width:460px;list-style:none;color:#1a7f37;font-size:15px;line-height:1.7;display:inline-block"]]);
+                var ask = ANSWERS.policy ? ANSWERS.policy.ask_before_sending !== false : true;
+                nextLines.appendChild(el("li", [], [ask ? "I'll ask you before sending anything." : "You asked me to send applications without pausing."]));
+                nextLines.appendChild(el("li", [], [res.data.unlocked ? "Unlimited: your license key has unlocked the daily limit." : "Free plan: up to " + res.data.free_daily_limit + " applications a day. Add a license key to unlock the limit."]));
+                if (ANSWERS.resume && ANSWERS.resume.profile_text) {
+                    nextLines.appendChild(el("li", [], ["Your resume profile: " + ANSWERS.resume.profile_text + "."]));
+                }
+                done.appendChild(nextLines);
+
+                done.appendChild(el("a", [["class", "btn btn-primary"], ["href", "/"]], ["Open the control panel →"]));
+                view.appendChild(done);
+                document.getElementById("backLink").style.display = "none";
+              });
+        }
+
+        fetch('/api/setup/flow').then(function (r) { return r.json(); }).then(function (flow) {
+            FLOW = flow;
+            ANSWERS = flow.answers || {};
+            STEP_IDS = flow.steps.map(function (s) { return s.id; });
+            views = ["welcome"] + STEP_IDS + ["summary"];
+            document.getElementById("flowTitle").textContent = FLOW.title;
+
+            if (ANSWERS.wants && ANSWERS.wants.parsed) WANTS_PARSED_SENTENCE = ANSWERS.wants.sentence || "";
+
+            var startIdx = 0;
+            if (flow.start_step) {
+                var editIdx = STEP_IDS.indexOf(flow.start_step);
+                if (editIdx >= 0) startIdx = editIdx + 1;
+                document.getElementById("backLink").textContent = "← Back to control panel";
+            }
+            goTo(startIdx);
+        });
+    </script>
+</body>
+</html>

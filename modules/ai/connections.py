@@ -150,8 +150,9 @@ def _ai_error_alert(message: str, error: Exception, title: str = "AI Error") -> 
 def _resolve_provider(name: Optional[str]) -> str:
     '''
     Map the user-facing provider name to a LangChain model provider.
-    Everything OpenAI-compatible (OpenAI, Ollama, LM Studio, DeepSeek, vLLM, ...)
-    runs through the "openai" provider by pointing the URL at the right server.
+    Everything OpenAI-compatible (OpenAI, Ollama, LM Studio, DeepSeek, OpenRouter,
+    vLLM, ...) runs through the "openai" provider by pointing the URL at the right
+    server. Only Google Gemini uses the native "google_genai" provider.
     '''
     n = (name or "openai").strip().lower()
     if n in ("gemini", "google", "google_genai", "google-genai"):
@@ -159,10 +160,49 @@ def _resolve_provider(name: Optional[str]) -> str:
     return "openai"
 
 
+def _dedicated_key(attr: str) -> str:
+    '''The value of a dedicated per-provider API key setting ('' if unset).'''
+    return str(getattr(cfg, attr, "") or "").strip()
+
+
+def _ai_api_key(provider: str) -> str:
+    '''
+    Pick the API key for the resolved provider. A dedicated key wins; the generic
+    llm_api_key is the fallback; finally an environment variable is consulted,
+    mirroring how the Google path already worked.
+    '''
+    generic = str(getattr(cfg, "llm_api_key", "") or "").strip()
+    if provider == "google_genai":
+        return (_dedicated_key("gemini_api_key") or generic
+                or os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY") or "")
+    if provider == "openrouter":
+        return _dedicated_key("openrouter_api_key") or generic or os.environ.get("OPENROUTER_API_KEY") or ""
+    return generic
+
+
+_OPENAI_DEFAULT_URL = "https://api.openai.com/v1/"
+_OPENROUTER_URL = "https://openrouter.ai/api/v1"
+
+
+def _ai_base_url(provider: str) -> str:
+    '''
+    Base URL for the OpenAI-compatible path. OpenRouter gets its own endpoint by
+    default: switching the provider must not keep sending requests at api.openai.com.
+    '''
+    url = str(getattr(cfg, "llm_api_url", "") or "").strip()
+    if provider == "openrouter" and (
+        not url or url.rstrip("/") == _OPENAI_DEFAULT_URL.rstrip("/") or url.rstrip("/").lower() == "https://api.deepseek.com"
+    ):
+        return _OPENROUTER_URL
+    return url
+
+
 def _msg_text(message) -> str:
     '''Extract plain text from a LangChain message (handles str content and content-block lists).'''
     text = getattr(message, "text", None)
-    if callable(text):
+    if isinstance(text, str) and text:
+        return text
+    if callable(text):  # legacy method form, e.g. older wrappers
         try:
             text = text()
         except Exception:
@@ -201,7 +241,7 @@ def create_ai_client() -> Optional[AIClient]:
     try:
         provider = _resolve_provider(cfg.ai_provider)
         model_name = cfg.llm_model
-        api_key = (getattr(cfg, "llm_api_key", "") or "").strip()
+        api_key = _ai_api_key(provider)
         temperature = getattr(cfg, "llm_temperature", None)
 
         kwargs = {}
@@ -212,19 +252,17 @@ def create_ai_client() -> Optional[AIClient]:
         if provider == "google_genai":
             usable_key = api_key if (api_key and api_key.lower() != "not-needed") else ""
             if not usable_key:
-                usable_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY") or ""
-            if not usable_key:
                 raise ValueError(
                     "No Google (Gemini) API key was found. Open the AI section of the "
                     "control panel and paste a Gemini API key "
                     "(get one free at https://aistudio.google.com/apikey) into the "
-                    "'API key' field, or set the GOOGLE_API_KEY / GEMINI_API_KEY "
-                    "environment variable, then click Start again."
+                    "'Gemini API key' field (or the 'AI API key' field), or set the "
+                    "GOOGLE_API_KEY / GEMINI_API_KEY environment variable, then click Start again."
                 )
             os.environ.setdefault("GOOGLE_API_KEY", usable_key)
             model = init_chat_model(model_name, model_provider="google_genai", **kwargs)
         else:
-            base_url = (getattr(cfg, "llm_api_url", "") or "").strip()
+            base_url = _ai_base_url(provider)
             # OpenAI-compatible servers accept any key; use a placeholder when none is given.
             kwargs["api_key"] = api_key or "not-needed"
             if base_url:

@@ -142,6 +142,8 @@ def validate_search() -> None | ValueError | TypeError:
 
     check_list(about_company_bad_words, "about_company_bad_words")
     check_list(about_company_good_words, "about_company_good_words")
+    check_list(skip_companies, "skip_companies")
+    check_boolean(skip_resume_companies, "skip_resume_companies")
     check_list(bad_words, "bad_words")
     check_boolean(security_clearance, "security_clearance")
     check_boolean(did_masters, "did_masters")
@@ -164,8 +166,10 @@ def validate_secrets() -> None | ValueError | TypeError:
     check_boolean(use_AI, "use_AI")
     check_string(llm_api_url, "llm_api_url", min_length=5)
     check_string(llm_api_key, "llm_api_key")
-    check_string(ai_provider, "ai_provider", ["openai", "deepseek", "gemini"])
+    check_string(ai_provider, "ai_provider", ["openai", "deepseek", "openrouter", "gemini"])
     check_string(llm_model, "llm_model")
+    check_string(gemini_api_key, "gemini_api_key")
+    check_string(openrouter_api_key, "openrouter_api_key")
 
 
 from config.settings import *

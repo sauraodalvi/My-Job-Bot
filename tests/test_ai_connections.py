@@ -60,12 +60,55 @@ class _StructuredModel(_StubModel):
     ("google_genai", "google_genai"),
     ("openai", "openai"),
     ("deepseek", "openai"),   # DeepSeek runs through the OpenAI-compatible path
+    ("openrouter", "openai"), # OpenRouter too - only Gemini is native
     ("ollama", "openai"),
     (None, "openai"),
     ("OpenAI", "openai"),     # case-insensitive
 ])
 def test_resolve_provider(name, expected):
     assert C._resolve_provider(name) == expected
+
+
+# ------------------------- dedicated provider keys ---------------------------
+def test_gemini_key_prefers_dedicated_then_generic(monkeypatch):
+    import config.secrets as cfg
+    monkeypatch.setattr(cfg, "gemini_api_key", "gem-key")
+    monkeypatch.setattr(cfg, "llm_api_key", "generic")
+    assert C._ai_api_key("google_genai") == "gem-key"
+    monkeypatch.setattr(cfg, "gemini_api_key", "")
+    assert C._ai_api_key("google_genai") == "generic"
+
+
+def test_openrouter_key_prefers_dedicated(monkeypatch):
+    import config.secrets as cfg
+    monkeypatch.setattr(cfg, "openrouter_api_key", "or-key")
+    monkeypatch.setattr(cfg, "llm_api_key", "generic")
+    assert C._ai_api_key("openrouter") == "or-key"
+    assert C._ai_api_key("openai") == "generic"  # other providers ignore it
+
+
+def test_key_falls_back_to_environment(monkeypatch):
+    import config.secrets as cfg
+    monkeypatch.setattr(cfg, "gemini_api_key", "")
+    monkeypatch.setattr(cfg, "openrouter_api_key", "")
+    monkeypatch.setattr(cfg, "llm_api_key", "")
+    monkeypatch.setenv("GEMINI_API_KEY", "gem-env")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-env")
+    assert C._ai_api_key("google_genai") == "gem-env"
+    assert C._ai_api_key("openrouter") == "or-env"
+
+
+def test_openrouter_base_url_flips_off_openai_default(monkeypatch):
+    import config.secrets as cfg
+    # User switched to OpenRouter but never touched the URL -> must not hit OpenAI.
+    monkeypatch.setattr(cfg, "llm_api_url", "https://api.openai.com/v1/")
+    assert C._ai_base_url("openrouter") == "https://openrouter.ai/api/v1"
+    monkeypatch.setattr(cfg, "llm_api_url", "")
+    assert C._ai_base_url("openrouter") == "https://openrouter.ai/api/v1"
+    # An explicit custom endpoint is respected, and used for other providers too.
+    monkeypatch.setattr(cfg, "llm_api_url", "http://localhost:1234/v1/")
+    assert C._ai_base_url("openrouter") == "http://localhost:1234/v1/"
+    assert C._ai_base_url("openai") == "http://localhost:1234/v1/"
 
 
 # ------------------------------- message text -------------------------------
@@ -158,6 +201,45 @@ def test_live_openai_answer(monkeypatch):
     monkeypatch.setattr(cfg, "llm_model", os.getenv("OPENAI_TEST_MODEL", "gpt-4o-mini"))
     monkeypatch.setattr(cfg, "llm_api_key", os.environ["OPENAI_API_KEY"])
     monkeypatch.setattr(cfg, "llm_api_url", "https://api.openai.com/v1/")
+
+    client = C.create_ai_client()
+    assert client is not None
+    answer = C.answer_question(client, "Reply with exactly the word: pong",
+                             question_type="text")
+    assert isinstance(answer, str) and answer.strip() != ""
+
+
+# --------------------------- live Gemini smoke test --------------------------
+@pytest.mark.live
+@pytest.mark.skipif(not (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")),
+                    reason="set GEMINI_API_KEY or GOOGLE_API_KEY to run the real Gemini smoke test")
+def test_live_gemini_answer(monkeypatch):
+    '''Real end-to-end check of the native Google (Gemini) path. Skipped by default.'''
+    import config.secrets as cfg
+    monkeypatch.setattr(cfg, "use_AI", True)
+    monkeypatch.setattr(cfg, "ai_provider", "gemini")
+    monkeypatch.setattr(cfg, "llm_model", os.getenv("GEMINI_TEST_MODEL", "gemini-2.5-flash"))
+    monkeypatch.setattr(cfg, "gemini_api_key", os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
+
+    client = C.create_ai_client()
+    assert client is not None
+    answer = C.answer_question(client, "Reply with exactly the word: pong",
+                             question_type="text")
+    assert isinstance(answer, str) and answer.strip() != ""
+
+
+# ------------------------- live OpenRouter smoke test ------------------------
+@pytest.mark.live
+@pytest.mark.skipif(not os.getenv("OPENROUTER_API_KEY"),
+                    reason="set OPENROUTER_API_KEY to run the real OpenRouter smoke test")
+def test_live_openrouter_answer(monkeypatch):
+    '''Real end-to-end check of the OpenRouter path. Skipped by default.'''
+    import config.secrets as cfg
+    monkeypatch.setattr(cfg, "use_AI", True)
+    monkeypatch.setattr(cfg, "ai_provider", "openrouter")
+    monkeypatch.setattr(cfg, "llm_model", os.getenv("OPENROUTER_TEST_MODEL", "openrouter/auto"))
+    monkeypatch.setattr(cfg, "openrouter_api_key", os.environ["OPENROUTER_API_KEY"])
+    monkeypatch.setattr(cfg, "llm_api_url", "https://api.openai.com/v1/")  # must be overridden
 
     client = C.create_ai_client()
     assert client is not None

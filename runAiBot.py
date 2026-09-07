@@ -20,6 +20,8 @@ import os
 import csv
 import re
 import time
+import json
+import sys
 import pyautogui
 from urllib.parse import quote
 
@@ -39,7 +41,7 @@ from selenium.common.exceptions import NoSuchElementException, ElementClickInter
 from config.personals import *
 from config.questions import *
 from config.search import *
-from config.secrets import use_AI, username, password, ai_provider
+from config.secrets import use_AI, username, password, ai_provider, free_daily_limit
 from config.settings import *
 
 from modules.open_chrome import *
@@ -47,6 +49,13 @@ from modules.helpers import *
 from modules.clickers_and_finders import *
 from modules.validator import validate_config
 from modules.external_fill import fill_external_form
+from modules import dry_run
+from modules.dry_run import is_dry_run
+from modules.license import (
+    applications_today, can_submit, is_paid, record_application, show_upsell,
+    can_scan_referral, record_referral_scan, show_referral_upsell,
+    can_send_referral, record_referral_message, referral_scans_today, referral_messages_today,
+)
 
 if use_AI:
     from modules.ai.connections import create_ai_client, extract_skills, answer_question, close_ai_client
@@ -56,6 +65,46 @@ from typing import Literal
 
 pyautogui.FAILSAFE = False
 # if use_resume_generator:    from resume_generator import is_logged_in_GPT, login_GPT, open_resume_chat, create_custom_resume
+
+
+#< Hard company blocklist (exact company-name match, independent of the
+#< 'About company' text). Populated once at startup from config/search.py and,
+#< when enabled, from the employers detected on the resume file.
+_hard_skip_companies = None
+
+
+def _init_hard_skip() -> set:
+    '''Build the exact-company-name blocklist set (lowercased names).'''
+    global _hard_skip_companies
+    names = {str(c).strip().lower() for c in (skip_companies or []) if str(c).strip()}
+    if skip_resume_companies:
+        try:
+            from modules.resumes.profile import detect_companies, extract_text
+            if default_resume_path:
+                companies = detect_companies(extract_text(str(default_resume_path)))
+                names.update(c.lower() for c in companies if c.strip())
+                if companies:
+                    print_lg(f'Blocking {len(companies)} companies from your resume: {", ".join(companies)}')
+        except Exception as e:
+            print_lg("Could not read companies from resume for the blocklist.", e)
+    _hard_skip_companies = names
+    return names
+
+
+def _hard_skip_company(company: str | None) -> bool:
+    '''True when this job's company is on the blocklist.
+
+    Substring-matched both ways so "FlytBase", "FlytBase Inc" and
+    "FlytBase Technologies" all count as the same company.
+    '''
+    if _hard_skip_companies is None:
+        _init_hard_skip()
+    if not company:
+        return False
+    c = company.strip().lower()
+    if c in _hard_skip_companies:
+        return True
+    return any(c in name or name in c for name in _hard_skip_companies)
 
 
 #< Global Variables and logics
@@ -221,6 +270,77 @@ def login_LN() -> None:
     except Exception:
         print_lg("Auto-login pending (LinkedIn may require verification or captcha).")
         manual_login_retry(is_logged_in_LN, 240)
+
+#>
+
+
+#< Authenticated-session probes (shared by the referral send flow and tests)
+def _session_has_li_at(some_driver=driver) -> bool:
+    '''
+    True if LinkedIn's session cookie `li_at` is present in the current
+    browser profile. This is the definitive "am I logged in" signal: it works
+    on ANY page, needs no DOM and no navigation, unlike checking for nav
+    markers. Selenium returns HttpOnly cookies (like li_at) from get_cookies().
+    '''
+    try:
+        for c in some_driver.get_cookies():
+            if c.get("name") == "li_at" and c.get("value"):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _signed_in_markers(some_driver=driver) -> bool:
+    '''
+    True if the current page renders LinkedIn's authenticated top-nav markers
+    (global-nav header, "My Network", the Me menu, the search box). Defensive:
+    any one match is enough so a single probe miss can't fail the check.
+    '''
+    try:
+        def _ok(probe) -> bool:
+            try:
+                return probe is not False
+            except Exception:
+                return False
+        return any([
+            _ok(try_xp(some_driver, "//header[contains(@class, 'global-nav')]", click=False)),
+            _ok(try_linkText(some_driver, "My Network")),
+            _ok(some_driver.find_element(By.CLASS_NAME, "global-nav__me")),
+            _ok(some_driver.find_element(By.CSS_SELECTOR, "input[placeholder*='Search']")),
+        ])
+    except Exception:
+        return False
+
+
+def _real_session_ready(some_driver=driver) -> bool:
+    '''
+    Reliable authenticated-session probe for the referral-send flow. Unlike the
+    old check it does NOT force-navigate to /feed/ first - that abrupt jump is
+    exactly what makes LinkedIn throw a challenge interstitial which falsely
+    reads as "not logged in". Instead:
+      1. The `li_at` cookie alone decides on any page (no navigation needed).
+      2. Failing that, the CURRENT page's signed-in markers decide - after a
+         referral scan we are standing on a logged-in jobs-search page with the
+         full top nav, so this passes without navigating anywhere.
+      3. Only if the current page is ambiguous (or a login/authwall itself) do
+         we probe /feed/ as a last resort.
+    '''
+    try:
+        if _session_has_li_at(some_driver):
+            return True
+        url = some_driver.current_url or ""
+        if "login" not in url and "authwall" not in url:
+            if _signed_in_markers(some_driver):
+                return True
+        some_driver.get("https://www.linkedin.com/feed/")
+        sleep(3)
+        url = some_driver.current_url or ""
+        if "login" in url or "authwall" in url:
+            return False
+        return _signed_in_markers(some_driver)
+    except Exception:
+        return False
 
 #>
 
@@ -404,6 +524,9 @@ def get_job_main_details(job: WebElement, blacklisted_companies: set, rejected_j
     # Skip if previously rejected due to blacklist or already applied
     if company in blacklisted_companies:
         print_lg(f'Skipping "{title} | {company}" job (Blacklisted Company). Job ID: {job_id}!')
+        skip = True
+    elif _hard_skip_company(company):
+        print_lg(f'Skipping "{title} | {company}" job (Company on your blocklist). Job ID: {job_id}!')
         skip = True
     elif job_id in rejected_jobs: 
         print_lg(f'Skipping previously rejected "{title} | {company}" job. Job ID: {job_id}!')
@@ -999,6 +1122,7 @@ def apply_to_jobs(search_terms: list[str]) -> None:
     if randomize_search_order:  shuffle(search_terms)
     locations = [s.strip() for s in search_location.split(",") if s.strip()] or [""]
     search_runs = [(term, location) for term in search_terms for location in locations]
+    dry_done = 0
     for searchTerm, location in search_runs:
         URL = f"https://www.linkedin.com/jobs/search/?keywords={quote(searchTerm)}"
         if location:
@@ -1033,12 +1157,21 @@ def apply_to_jobs(search_terms: list[str]) -> None:
             
                 for job in job_listings:
                     if keep_screen_awake: pyautogui.press('shiftright')
+                    if is_dry_run() and dry_done >= dry_run.DRY_MAX_JOBS:
+                        print_lg(f"[DRY RUN] Reached rehearsal cap of {dry_run.DRY_MAX_JOBS} jobs.")
+                        current_count = switch_number
+                        break
                     if current_count >= switch_number: break
                     print_lg("\n-@-\n")
 
                     job_id,title,company,work_location,work_style,skip = get_job_main_details(job, blacklisted_companies, rejected_jobs)
                     
                     if skip: continue
+
+                    # Stop applying once the Free plan daily limit is reached (hard stop + upsell).
+                    if not can_submit():
+                        show_upsell()
+                        return
                     # Redundant fail safe check for applied jobs!
                     try:
                         if job_id in applied_jobs or find_by_class(driver, "jobs-s-apply__application-link", 2):
@@ -1179,6 +1312,19 @@ def apply_to_jobs(search_terms: list[str]) -> None:
                         except Exception:
                             pass
                     if is_easy_apply:
+                        if is_dry_run():
+                            dry_done += 1
+                            dry_run.count("easy_apply")
+                            print_lg("[DRY RUN] Easy Apply job detected. Rehearsing the modal - will NOT submit.")
+                            try:
+                                modal = find_by_class(driver, "jobs-easy-apply-modal")
+                                rehearsed = answer_questions(modal, set(), work_location, job_description=description)
+                                if rehearsed:
+                                    print_lg("[DRY RUN] Would answer:", rehearsed)
+                            except Exception as e:
+                                print_lg("[DRY RUN] Easy Apply rehearsal skipped:", e)
+                            discard_job()
+                            continue
                         try: 
                             try:
                                 errored = ""
@@ -1245,6 +1391,11 @@ def apply_to_jobs(search_terms: list[str]) -> None:
                             discard_job()
                             continue
                     else:
+                        if is_dry_run():
+                            dry_done += 1
+                            dry_run.count("external")
+                            print_lg("[DRY RUN] External application detected - not opening external site in dry-run.")
+                            continue
                         # Case 2: Apply externally
                         skip, application_link, tabs_count, external_submitted = external_apply(pagination_element, job_id, job_link, resume, date_listed, application_link, screenshot_name, ai_client=(aiClient if use_AI else None), job_description=(description if isinstance(description, str) else ""))
                         if external_submitted: date_applied = datetime.now()
@@ -1255,6 +1406,11 @@ def apply_to_jobs(search_terms: list[str]) -> None:
 
                     submitted_jobs(job_id, title, company, work_location, work_style, description, experience_required, skills, hr_name, hr_link, resume, reposted, date_listed, date_applied, job_link, application_link, questions_list, connect_request)
                     if uploaded:   useNewResume = False
+
+                    # Count a real submission toward the Free plan daily usage.
+                    if date_applied != "Pending":
+                        used = record_application()
+                        print_lg(f"LICENSE: {used}/{free_daily_limit} Free plan applications used today" if not is_paid() else f"LICENSE: Unlimited plan - {used} applications sent today")
 
                     print_lg(f'Successfully saved "{title} | {company}" job. Job ID: {job_id} info')
                     current_count += 1
@@ -1275,6 +1431,10 @@ def apply_to_jobs(search_terms: list[str]) -> None:
                     print_lg(f"\n>-> Didn't find Page {current_page+1}. Probably at the end page of results!\n")
                     break
 
+            if is_dry_run() and dry_done >= dry_run.DRY_MAX_JOBS:
+                print_lg(f"[DRY RUN] Reached rehearsal cap of {dry_run.DRY_MAX_JOBS}; stopping the application rehearsal.")
+                break
+
         except (NoSuchWindowException, WebDriverException) as e:
             print_lg("The browser window was closed or the session became invalid. Stopping.", e)
             raise e  # let the outer handler deal with it
@@ -1284,6 +1444,203 @@ def apply_to_jobs(search_terms: list[str]) -> None:
             continue
 
         
+# ===========================================================================
+# Referral finder (find jobs where the user has LinkedIn connections)
+# ---------------------------------------------------------------------------
+# LinkedIn shows a "N connections work here" badge on job-search result cards.
+# We collect those jobs so the user can draft a referral message to someone at
+# that company. Connection NAMES are a LinkedIn Premium feature and are NOT
+# requested here - only the company + count the free UI already exposes.
+# ===========================================================================
+REFERRAL_RESULTS_PATH = os.path.join(os.getcwd(), "referral_results.json")
+
+
+def _parse_referral_card(job) -> dict | None:
+    '''
+    Best-effort parse of one job-search result card that carries a
+    "N connections work here" badge. Returns {job_id, title, company,
+    location, work_style, connection_count, link} or None if unparseable.
+    '''
+    try:
+        job_id = job.get_dom_attribute("data-occludable-job-id") or ""
+        if not job_id:
+            return None
+        text = job.text
+    except Exception:
+        return None
+    match = re.search(r"(\d+)\s+connections?\s+work here", text, re.IGNORECASE)
+    if not match:
+        return None
+    count = int(match.group(1))
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+
+    title = lines[0] if lines else "Unknown"
+    company, location, work_style = "Unknown", "", ""
+    try:
+        subtitle = job.find_element(By.CLASS_NAME, "artdeco-entity-lockup__subtitle").text
+        if " · " in subtitle:
+            company = subtitle.split(" · ")[0].strip()
+            location = subtitle.split(" · ", 1)[1].strip()
+    except Exception:
+        pass
+    if company == "Unknown":
+        # No subtitle lockup: company is usually the 3rd non-empty line.
+        if len(lines) >= 3:
+            company = lines[2]
+    style_match = re.search(r"\((Remote|On-site|Hybrid)\)", location, re.IGNORECASE)
+    if style_match:
+        work_style = style_match.group(1)
+        location = location[:style_match.start()].strip().rstrip(" ·")
+    else:
+        bare_style = re.match(r"^(Remote|On-site|Hybrid)$", location, re.IGNORECASE)
+        if bare_style:
+            work_style = bare_style.group(1)
+    return {
+        "job_id": job_id,
+        "title": title,
+        "company": company,
+        "location": location,
+        "work_style": work_style,
+        "connection_count": count,
+        "link": "https://www.linkedin.com/jobs/view/" + job_id,
+    }
+
+
+def find_referral_jobs(max_pages: int = 6) -> None:
+    '''
+    Search every configured term/location and record result cards that carry a
+    "N connections work here" badge, writing them to referral_results.json so the
+    control panel can display them. Runs in the already-open LinkedIn session.
+    '''
+    found: list[dict] = []
+    seen: set[str] = set()
+    locations = [s.strip() for s in search_location.split(",") if s.strip()] or [""]
+    search_runs = [(term, loc) for term in search_terms for loc in locations]
+
+    if not search_terms:
+        print_lg("Referral finder: no search terms configured; nothing to do.")
+        _write_referral_results(found)
+        return
+
+    print_lg("\n########  REFERRAL FINDER  ########")
+    print_lg("Scanning your searches for jobs where you have LinkedIn connections...")
+    print_lg("(Only counts are read - connection names are a LinkedIn Premium feature.)")
+
+    for term, location in search_runs:
+        url = f"https://www.linkedin.com/jobs/search/?keywords={quote(term)}"
+        if location:
+            url += f"&location={quote(location)}"
+        try:
+            driver.get(url)
+            buffer(3)
+        except Exception as e:
+            print_lg(f"Referral finder: couldn't load search for '{term}'", e)
+            continue
+
+        # Apply LinkedIn's date/sort filters for a cleaner, consistent result set.
+        try:
+            apply_filters(location)
+        except Exception as e:
+            print_lg("Referral finder: filter stage failed; continuing anyway.", e)
+
+        page = 0
+        while page < max_pages:
+            try:
+                wait.until(EC.presence_of_all_elements_located((By.XPATH, "//li[@data-occludable-job-id]")))
+            except Exception:
+                break
+            buffer(2)
+            for job in driver.find_elements(By.XPATH, "//li[@data-occludable-job-id]"):
+                entry = _parse_referral_card(job)
+                if not entry:
+                    continue
+                if entry["job_id"] in seen:
+                    continue
+                seen.add(entry["job_id"])
+                found.append(entry)
+                print_lg(f"  {entry['connection_count']} connection(s) at {entry['company']}: {entry['title']} ({entry['link']})")
+
+            # Advance to the next page of results.
+            pagination_element, current_page = get_page_info()
+            if pagination_element is None or current_page is None:
+                break
+            page += 1
+            if page >= max_pages:
+                break
+            try:
+                pagination_element.find_element(By.XPATH, f"//button[@aria-label='Page {current_page+1}']").click()
+                buffer(2)
+            except Exception:
+                break
+
+    found.sort(key=lambda e: e["connection_count"], reverse=True)
+    print_lg(f"\nReferral finder complete: {len(found)} job(s) where you have connections.")
+    _write_referral_results(found)
+
+
+def _write_referral_results(results: list[dict]) -> None:
+    '''Persist referral results to referral_results.json with a timestamp.'''
+    payload = {
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "count": len(results),
+        "results": results,
+    }
+    try:
+        with open(REFERRAL_RESULTS_PATH, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+        print_lg(f"Referral results written to {REFERRAL_RESULTS_PATH}")
+    except Exception as e:
+        print_lg("Referral finder: could not write results file.", e)
+
+
+def _load_referral_results() -> list[dict]:
+    '''Load referral results from referral_results.json.'''
+    if not os.path.isfile(REFERRAL_RESULTS_PATH):
+        print_lg("No referral_results.json found. Run --referral first.")
+        return []
+    with open(REFERRAL_RESULTS_PATH, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    return data.get("results", [])
+
+
+def _enrich_referral_hr_info(results: list[dict], max_jobs: int = 15) -> list[dict]:
+    '''
+    Visit each referral job's page to extract HR name and profile link
+    from the hirer card. Updates the result dicts in-place.
+    '''
+    print_lg(f"\nEnriching {min(len(results), max_jobs)} referral jobs with HR info...")
+    for i, job in enumerate(results[:max_jobs]):
+        job_url = job.get("link", "")
+        if not job_url:
+            continue
+        try:
+            driver.get(job_url)
+            buffer(3)
+            hr_name = "Unknown"
+            hr_link = ""
+            try:
+                hr_card = WebDriverWait(driver, 4).until(
+                    EC.presence_of_element_located((By.CLASS_NAME, "hirer-card__hirer-information"))
+                )
+                hr_link = hr_card.find_element(By.TAG_NAME, "a").get_attribute("href")
+                hr_name = hr_card.find_element(By.TAG_NAME, "span").text
+            except Exception:
+                pass
+            job["hr_name"] = hr_name
+            job["hr_link"] = hr_link
+            status = f"HR: {hr_name}" if hr_name != "Unknown" else "No HR info found"
+            print_lg(f"  [{i+1}] {job.get('company', '?')} — {status}")
+        except Exception as e:
+            print_lg(f"  [{i+1}] Failed to visit {job_url}: {e}")
+            job["hr_name"] = "Unknown"
+            job["hr_link"] = ""
+        buffer(2)
+
+    # Re-write results with HR info
+    _write_referral_results(results)
+    return results
+
+
 def run(total_runs: int) -> int:
     if dailyEasyApplyLimitReached:
         return total_runs
@@ -1294,6 +1651,9 @@ def run(total_runs: int) -> int:
     apply_to_jobs(search_terms)
     print_lg("########################################################################################################################\n")
     if not dailyEasyApplyLimitReached:
+        if not is_paid() and applications_today() >= free_daily_limit:
+            print_lg("\n###############  Free plan daily limit reached - application stopped until tomorrow.  ###############\n")
+            return total_runs + 1
         print_lg("Sleeping for 10 min...")
         sleep(300)
         print_lg("Few more min... Gonna start with in next 5 min...")
@@ -1308,11 +1668,20 @@ linkedIn_tab = False
 
 def main() -> None:
     print_lg("Starting Auto Job Applier... Please consider sponsoring the project at https://github.com/sponsors/GodsScion")
+    if is_dry_run():
+        print_lg("[DRY RUN] Rehearsal mode: exercising real code paths. No application will be submitted and no referral message will be sent.")
     total_runs = 1
     try:
         global linkedIn_tab, tabs_count, useNewResume, aiClient
         alert_title = "Error Occurred. Closing Browser!"
         validate_config()
+
+        # Licensing status banner
+        if is_paid():
+            print_lg("LICENSE: Unlimited plan (license key activated)")
+        else:
+            print_lg(f"LICENSE: Free plan - up to {free_daily_limit} applications per day ({applications_today()} used today)")
+            print_lg(f"LICENSE: Referral scans - {referral_scans_today()}/{1} used today | Messages - {referral_messages_today()}/{3} used today")
         
         if not os.path.exists(default_resume_path):
             print_lg('Notice: Default resume "{}" is not present on disk. The bot will continue using your previously uploaded resume in LinkedIn.'.format(default_resume_path))
@@ -1324,6 +1693,72 @@ def main() -> None:
         if not is_logged_in_LN(): login_LN()
         
         linkedIn_tab = driver.current_window_handle
+
+        # One-click referral flow: scan AND send in the same authenticated session.
+        combined = "--referral" in sys.argv and "--send-referrals" in sys.argv
+
+        # Referral mode: find jobs where the user has connections, then stop
+        # (unless --send-referrals is also set, in which case we continue to send
+        # within the SAME authenticated session - the "one-click" referral flow).
+        if "--referral" in sys.argv:
+            print_lg("Referral mode detected.")
+            if not can_scan_referral():
+                show_referral_upsell("scan")
+                return
+            # Count the attempt BEFORE running so a crashed/killed scan still
+            # consumes today's allowance (prevents endless re-runs).
+            if not is_dry_run():
+                record_referral_scan()
+            try:
+                find_referral_jobs()
+            except Exception as e:
+                critical_error_log("In Referral Finder", e)
+            if not combined:
+                try:
+                    if driver:
+                        driver.quit()
+                except Exception:
+                    pass
+                return
+
+        # Send-referrals mode: resolve connection names and send messages via LinkedIn DM + Gmail.
+        if "--send-referrals" in sys.argv:
+            print_lg("Send-referrals mode detected.")
+            if not can_send_referral():
+                show_referral_upsell("message")
+                return
+            try:
+                from modules.helpers import manual_login_retry
+
+                # Session probe is module-level so it can be unit-tested. See
+                # _real_session_ready(): it avoids a forced /feed/ navigation
+                # (which triggers LinkedIn challenges and falsely reads as
+                # "not logged in"), preferring the li_at cookie and the
+                # current page's signed-in markers first.
+                print_lg("Ensuring an authenticated LinkedIn session before sending referral messages...")
+                if _real_session_ready(driver):
+                    print_lg("Already signed in - reusing your LinkedIn session.")
+                else:
+                    print_lg("Not signed in yet. Attempting login...")
+                    login_LN()
+                    if not _real_session_ready(driver):
+                        print_lg("Automated login did not produce a usable session. Please log in manually in the browser.")
+                        manual_login_retry(lambda: _real_session_ready(driver), limit=180)
+                print_lg("Authenticated LinkedIn session confirmed.")
+
+                results = _load_referral_results()
+                if results:
+                    from modules.referral_messaging import send_referral_messages
+                    send_referral_messages(driver, results)
+            except Exception as e:
+                critical_error_log("In Referral Messaging", e)
+            finally:
+                try:
+                    if driver:
+                        driver.quit()
+                except Exception:
+                    pass
+            return
 
         # # Login to ChatGPT in a new tab for resume customization
         # if use_resume_generator:
@@ -1355,6 +1790,8 @@ def main() -> None:
             total_runs = run(total_runs)
             if dailyEasyApplyLimitReached:
                 break
+            if not is_paid() and applications_today() >= free_daily_limit:
+                break
         
 
     except (NoSuchWindowException, WebDriverException) as e:
@@ -1363,6 +1800,8 @@ def main() -> None:
         critical_error_log("In Applier Main", e)
         pyautogui.alert(e,alert_title)
     finally:
+        if is_dry_run():
+            print_lg(dry_run.summary())
         summary = "Total runs: {}\nJobs Easy Applied: {}\nExternal job links collected: {}\nTotal applied or collected: {}\nFailed jobs: {}\nIrrelevant jobs skipped: {}\n".format(total_runs,easy_applied_count,external_jobs_count,easy_applied_count + external_jobs_count,failed_count,skip_count)
         print_lg(summary)
         print_lg("\n\nTotal runs:                     {}".format(total_runs))

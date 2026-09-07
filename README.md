@@ -32,7 +32,7 @@ New here, or not comfortable editing code? Use the built-in control panel. You s
 2. **Download this project** (green "Code" button → "Download ZIP", then unzip; or clone it).
 3. **Double-click the launcher for your system:**
     - **macOS:** `start.command`
-    - **Windows:** `start.bat`
+    - **Windows:** `Get Referral.bat`
     - **Linux:** `start.sh` (run `./start.sh` in a terminal)
 
     The first run sets things up automatically (it may take a minute). After that it's quick.

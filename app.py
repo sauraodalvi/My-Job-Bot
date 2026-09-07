@@ -33,7 +33,16 @@ import threading
 import importlib
 
 import config_schema
+import setup_flow
 from config import _overrides
+from modules.license import (
+    is_paid, free_daily_limit, applications_today,
+    referral_scans_today, referral_scan_remaining,
+    referral_messages_today, referral_msg_remaining,
+    can_scan_referral, can_send_referral, referral_paid_daily_limit,
+    referral_free_daily_limit, referral_msg_free_daily_limit,
+)
+from modules.search_parse import next_state as parse_search_sentence
 
 app = Flask(__name__)
 CORS(app)
@@ -45,6 +54,16 @@ LOG_PATH = os.path.join(ROOT, ".bot_run.log")
 PID_PATH = os.path.join(ROOT, ".bot_run.pid")
 
 PATH = 'all excels/'
+
+# Referral-finder outputs (the bot writes referral_results.json; app.py serves it).
+REFERRAL_RESULTS_PATH = os.path.join(ROOT, 'referral_results.json')
+REFERRAL_LOG_PATH = os.path.join(ROOT, '.referral_run.log')
+REFERRAL_PID_PATH = os.path.join(ROOT, '.referral_run.pid')
+
+# Referral messaging outputs
+REFERRAL_MSG_LOG_PATH = os.path.join(ROOT, 'referral_message_log.csv')
+REFERRAL_SEND_LOG_PATH = os.path.join(ROOT, '.referral_send.log')
+REFERRAL_SEND_PID_PATH = os.path.join(ROOT, '.referral_send.pid')
 
 
 # ===========================================================================
@@ -157,12 +176,70 @@ _bot_proc = None
 _bot_lock = threading.Lock()
 
 
+# A separate tracked process for referral-finder runs (same runAiBot.py but with
+# the --referral flag). Kept apart from the apply run so a referral scan never
+# collides with an in-progress apply run, and /api/stop can shut both down.
+_referral_proc = None
+_referral_lock = threading.Lock()
+
+
+def _referral_is_running() -> bool:
+    '''True if the referral-finder subprocess is still alive.'''
+    global _referral_proc
+    if _referral_proc is None:
+        return False
+    if _referral_proc.poll() is None:
+        return True
+    _referral_proc = None
+    try:
+        os.remove(REFERRAL_PID_PATH)
+    except OSError:
+        pass
+    return False
+
+
 def _bot_command():
     '''The command used to launch the bot. Isolated so tests can monkeypatch it.'''
     # "-X utf8" makes print()/stdout use UTF-8 regardless of the console code
     # page, so job titles/descriptions with non-ASCII glyphs can never crash the
     # bot with a cp1252 UnicodeEncodeError.
     return [sys.executable, "-u", "-X", "utf8", os.path.join(ROOT, "runAiBot.py")]
+
+
+def _referral_command():
+    '''The command used to launch the bot in referral-find mode.'''
+    return _bot_command() + ["--referral"]
+
+
+# A separate tracked process for referral-send runs (--send-referrals flag).
+_send_proc = None
+_send_lock = threading.Lock()
+
+
+def _send_is_running() -> bool:
+    '''True if the referral-send subprocess is still alive.'''
+    global _send_proc
+    if _send_proc is None:
+        return False
+    if _send_proc.poll() is None:
+        return True
+    _send_proc = None
+    try:
+        os.remove(REFERRAL_SEND_PID_PATH)
+    except OSError:
+        pass
+    return False
+
+
+def _send_command():
+    '''The command used to launch the bot in send-referrals mode.'''
+    return _bot_command() + ["--send-referrals"]
+
+
+def _full_referral_command():
+    '''The command used to launch the one-click referral flow: scan THEN send
+    referral messages in the same authenticated session.'''
+    return _bot_command() + ["--referral", "--send-referrals"]
 
 
 def _is_running() -> bool:
@@ -231,6 +308,78 @@ def home():
 def history():
     """Serve the applied-jobs history page."""
     return render_template('index.html')
+
+
+@app.route('/setup')
+def setup_page():
+    """Serve the "Let's get you ready" onboarding flow."""
+    return render_template('setup_flow.html')
+
+
+@app.route('/api/setup/flow', methods=['GET'])
+def api_setup_flow():
+    '''The shared setup-flow declaration + current saved answers, so the web
+    renderer never duplicates any step logic.'''
+    answers = setup_flow.prefill()
+    return jsonify({
+        "title": setup_flow.FLOW_TITLE,
+        "welcome_sentence": setup_flow.WELCOME_SENTENCE,
+        "welcome_notes": setup_flow.WELCOME_NOTES,
+        "steps": setup_flow.STEPS,
+        "answers": answers,
+        "complete": setup_flow.is_complete(),
+        "free_daily_limit": free_daily_limit,
+        "unlocked": setup_flow.has_license(),
+        "start_step": request.args.get('edit') or None,
+    })
+
+
+@app.route('/api/setup/detect', methods=['POST'])
+def api_setup_detect():
+    '''Detect a resume profile for a chosen file (the "trust moment"). The file
+    stays a snapshot and the extracted profile is a separate record.'''
+    payload = request.get_json(silent=True)
+    path = str((payload or {}).get("path") or "").strip()
+    text, ok = setup_flow.describe_resume_path(path)
+    return jsonify({"path": path, "text": text, "ok": ok})
+
+
+@app.route('/api/setup/parse', methods=['POST'])
+def api_setup_parse():
+    '''Parse the "what you want" sentence into a Saved Search, or ask the one
+    missing plain-word question (guided / clarify) that gets there.'''
+    payload = request.get_json(silent=True) or {}
+    sentence = str(payload.get("sentence") or "").strip()
+    reply = payload.get("reply")
+    state = payload.get("guided_state")
+    if not isinstance(state, dict):
+        state = None
+    return jsonify(parse_search_sentence(sentence, reply=reply, state=state))
+
+
+@app.route('/api/setup', methods=['POST'])
+def api_save_setup():
+    '''Validates the flow answers and persists them through the shared save
+    path (the same user_config.json the tool reads).'''
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict) or "answers" not in payload:
+        return jsonify({"error": "Expected a JSON object with an `answers` field"}), 400
+    answers = payload.get("answers")
+    if not isinstance(answers, dict):
+        return jsonify({"error": "`answers` must be an object"}), 400
+
+    errors = setup_flow.validate_flow(answers)
+    if errors:
+        return jsonify({"errors": errors}), 400
+
+    setup_flow.save_flow(answers)
+    return jsonify({
+        "saved": True,
+        "answers": setup_flow.prefill(),
+        "complete": setup_flow.is_complete(),
+        "free_daily_limit": free_daily_limit,
+        "unlocked": setup_flow.has_license(),
+    })
 
 
 # The applied-jobs history CSV the bot writes, and how its columns map to the JSON
@@ -395,14 +544,30 @@ def api_run():
 
 @app.route('/api/stop', methods=['POST'])
 def api_stop():
-    '''Stops the running bot subprocess (and its children where possible).'''
-    global _bot_proc
+    '''Stops the running bot subprocess(es) (and their children where possible).'''
+    global _bot_proc, _referral_proc, _send_proc
     with _bot_lock:
         if _bot_proc is not None:
             _terminate(_bot_proc)
             _bot_proc = None
         _remove_pid_file()
-        return jsonify({"running": False})
+    with _referral_lock:
+        if _referral_proc is not None:
+            _terminate(_referral_proc)
+            _referral_proc = None
+        try:
+            os.remove(REFERRAL_PID_PATH)
+        except OSError:
+            pass
+    with _send_lock:
+        if _send_proc is not None:
+            _terminate(_send_proc)
+            _send_proc = None
+        try:
+            os.remove(REFERRAL_SEND_PID_PATH)
+        except OSError:
+            pass
+    return jsonify({"running": False})
 
 
 @app.route('/api/status', methods=['GET'])
@@ -441,6 +606,254 @@ def api_logs():
         return jsonify({"content": content, "next_offset": offset + len(data)})
     except OSError as err:
         return jsonify({"content": "", "next_offset": offset, "error": str(err)})
+
+
+# ===========================================================================
+# Referral-finder API
+# ===========================================================================
+@app.route('/api/referral/run', methods=['POST'])
+def api_referral_run():
+    '''Starts the bot in referral-find mode if neither an apply run nor a
+    referral run is already active.'''
+    global _referral_proc
+    if not can_scan_referral():
+        remaining = referral_scan_remaining() or 0
+        return jsonify({"running": False, "error": f"Referral scan daily limit reached ({remaining} left). Upgrade for more scans per day."}), 403
+    with _bot_lock:
+        if _is_running():
+            return jsonify({"running": False, "error": "The main tool is running. Stop it before a referral scan."}), 409
+    with _referral_lock:
+        if _referral_is_running():
+            return jsonify({"running": True, "pid": _referral_proc.pid,
+                            "message": "A referral scan is already running."})
+        try:
+            log_file = open(REFERRAL_LOG_PATH, "w", encoding="utf-8")
+            popen_kwargs = {
+                "cwd": ROOT,
+                "stdout": log_file,
+                "stderr": subprocess.STDOUT,
+            }
+            if os.name == "nt":
+                popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            else:
+                popen_kwargs["start_new_session"] = True
+            _referral_proc = subprocess.Popen(_referral_command(), **popen_kwargs)
+        except Exception as err:
+            return jsonify({"running": False, "error": str(err)}), 500
+        try:
+            with open(REFERRAL_PID_PATH, "w", encoding="utf-8") as pid_file:
+                pid_file.write(str(_referral_proc.pid))
+        except OSError:
+            pass
+        return jsonify({"running": True, "pid": _referral_proc.pid})
+
+
+@app.route('/api/referral/status', methods=['GET'])
+def api_referral_status():
+    '''Reports whether the referral-finder subprocess is currently running.'''
+    with _referral_lock:
+        running = _referral_is_running()
+        pid = _referral_proc.pid if (running and _referral_proc is not None) else None
+        return jsonify({"running": running, "pid": pid})
+
+
+@app.route('/api/referral/results', methods=['GET'])
+def api_referral_results():
+    '''Returns the latest referral_results.json (or a clear "not found" error).'''
+    if not os.path.exists(REFERRAL_RESULTS_PATH):
+        return jsonify({"error": "No referral results yet. Run a referral scan first."}), 404
+    try:
+        with open(REFERRAL_RESULTS_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return jsonify(data)
+    except Exception as err:
+        return jsonify({"error": f"Could not read referral results: {err}"}), 500
+
+
+@app.route('/api/referral/logs', methods=['GET'])
+def api_referral_logs():
+    '''Returns the referral-run log from byte offset ?offset=N, mirroring /api/logs.'''
+    try:
+        offset = int(request.args.get("offset", 0))
+    except (TypeError, ValueError):
+        offset = 0
+    if offset < 0:
+        offset = 0
+    if not os.path.exists(REFERRAL_LOG_PATH):
+        return jsonify({"content": "", "next_offset": 0})
+    try:
+        with open(REFERRAL_LOG_PATH, "rb") as log_file:
+            log_file.seek(0, os.SEEK_END)
+            size = log_file.tell()
+            if offset > size:
+                offset = 0
+            log_file.seek(offset)
+            data = log_file.read()
+        content = data.decode("utf-8", errors="replace")
+        return jsonify({"content": content, "next_offset": offset + len(data)})
+    except OSError as err:
+        return jsonify({"content": "", "next_offset": offset, "error": str(err)})
+
+
+# ===========================================================================
+# Referral-messaging API (sends DMs/emails to HR contacts from referral scan)
+# ===========================================================================
+@app.route('/api/referral/send', methods=['POST'])
+def api_referral_send():
+    '''Starts the bot in send-referrals mode. Enriches referral results with
+    HR info, then sends LinkedIn DMs and/or Gmail emails.'''
+    global _send_proc
+    if not can_send_referral():
+        remaining = referral_msg_remaining() or 0
+        return jsonify({"running": False, "error": f"Referral message daily limit reached ({remaining} left). Upgrade for unlimited messages."}), 403
+    with _bot_lock:
+        if _is_running():
+            return jsonify({"running": False, "error": "The main tool is running. Stop it first."}), 409
+    with _referral_lock:
+        if _referral_is_running():
+            return jsonify({"running": False, "error": "A referral scan is running. Wait for it to finish."}), 409
+    with _send_lock:
+        if _send_is_running():
+            return jsonify({"running": True, "pid": _send_proc.pid,
+                            "message": "Referral messaging is already running."})
+        # Check that referral results exist
+        if not os.path.exists(REFERRAL_RESULTS_PATH):
+            return jsonify({"running": False, "error": "No referral results found. Run a referral scan first."}), 404
+        try:
+            log_file = open(REFERRAL_SEND_LOG_PATH, "w", encoding="utf-8")
+            popen_kwargs = {
+                "cwd": ROOT,
+                "stdout": log_file,
+                "stderr": subprocess.STDOUT,
+            }
+            if os.name == "nt":
+                popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            else:
+                popen_kwargs["start_new_session"] = True
+            _send_proc = subprocess.Popen(_send_command(), **popen_kwargs)
+        except Exception as err:
+            return jsonify({"running": False, "error": str(err)}), 500
+        try:
+            with open(REFERRAL_SEND_PID_PATH, "w", encoding="utf-8") as pid_file:
+                pid_file.write(str(_send_proc.pid))
+        except OSError:
+            pass
+        return jsonify({"running": True, "pid": _send_proc.pid})
+
+
+@app.route('/api/referral/full', methods=['POST'])
+def api_referral_full():
+    '''One-click: scan for referral jobs, then send messages in one process.'''
+    with _send_lock:
+        if _send_is_running():
+            return jsonify({"running": True, "error": "A referral send process is already running."}), 409
+        if _is_running():
+            return jsonify({"running": False, "error": "The auto-apply bot is currently running. Stop it first."}), 409
+        if not can_scan_referral():
+            return jsonify({"running": False, "error": "You have used all referral scans for today."}), 400
+        if not can_send_referral():
+            return jsonify({"running": False, "error": "You have used all referral messages for today."}), 400
+        try:
+            log_file = open(REFERRAL_SEND_LOG_PATH, "w", encoding="utf-8")
+            popen_kwargs = {
+                "cwd": ROOT,
+                "stdout": log_file,
+                "stderr": subprocess.STDOUT,
+                "stdin": subprocess.DEVNULL,
+            }
+            if os.name == "nt":
+                popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            else:
+                popen_kwargs["start_new_session"] = True
+            _send_proc = subprocess.Popen(_full_referral_command(), **popen_kwargs)
+        except Exception as err:
+            return jsonify({"running": False, "error": str(err)}), 500
+    try:
+        with open(REFERRAL_SEND_PID_PATH, "w", encoding="utf-8") as pid_file:
+            pid_file.write(str(_send_proc.pid))
+    except OSError:
+        pass
+    return jsonify({"running": True, "pid": _send_proc.pid})
+
+
+@app.route('/api/referral/send/status', methods=['GET'])
+def api_referral_send_status():
+    '''Reports whether the referral-send subprocess is currently running.'''
+    with _send_lock:
+        running = _send_is_running()
+        pid = _send_proc.pid if (running and _send_proc is not None) else None
+        return jsonify({"running": running, "pid": pid})
+
+
+@app.route('/api/referral/send/logs', methods=['GET'])
+def api_referral_send_logs():
+    '''Returns the referral-send log from byte offset ?offset=N.'''
+    try:
+        offset = int(request.args.get("offset", 0))
+    except (TypeError, ValueError):
+        offset = 0
+    if offset < 0:
+        offset = 0
+    if not os.path.exists(REFERRAL_SEND_LOG_PATH):
+        return jsonify({"content": "", "next_offset": 0})
+    try:
+        with open(REFERRAL_SEND_LOG_PATH, "rb") as log_file:
+            log_file.seek(0, os.SEEK_END)
+            size = log_file.tell()
+            if offset > size:
+                offset = 0
+            log_file.seek(offset)
+            data = log_file.read()
+        content = data.decode("utf-8", errors="replace")
+        return jsonify({"content": content, "next_offset": offset + len(data)})
+    except OSError as err:
+        return jsonify({"content": "", "next_offset": offset, "error": str(err)})
+
+
+@app.route('/api/referral/send/log', methods=['GET'])
+def api_referral_send_log():
+    '''Returns the referral_message_log.csv contents for display in the UI.'''
+    if not os.path.exists(REFERRAL_MSG_LOG_PATH):
+        return jsonify({"rows": [], "count": 0})
+    try:
+        rows = []
+        with open(REFERRAL_MSG_LOG_PATH, "r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                rows.append(row)
+        return jsonify({"rows": rows, "count": len(rows)})
+    except Exception as err:
+        return jsonify({"rows": [], "count": 0, "error": str(err)})
+
+
+# ===========================================================================
+# License / usage status API
+# ===========================================================================
+@app.route('/api/license/status', methods=['GET'])
+def api_license_status():
+    '''Reports plan + today's usage counters for both apply and referral.'''
+    paid = is_paid()
+    return jsonify({
+        "paid": paid,
+        "apply": {
+            "used_today": applications_today(),
+            "free_daily_limit": free_daily_limit,
+            "remaining": None if paid else max(0, free_daily_limit - applications_today()),
+        },
+        "referral_scan": {
+            "used_today": referral_scans_today(),
+            "free_daily_limit": referral_free_daily_limit,
+            "paid_daily_limit": referral_paid_daily_limit,
+            "remaining": referral_scan_remaining(),
+            "can_scan": can_scan_referral(),
+        },
+        "referral_message": {
+            "used_today": referral_messages_today(),
+            "free_daily_limit": referral_msg_free_daily_limit,
+            "remaining": referral_msg_remaining(),
+            "can_send": can_send_referral(),
+        },
+    })
 
 
 def _resolve_port(preferred: int = 5000) -> int:

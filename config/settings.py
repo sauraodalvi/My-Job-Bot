@@ -28,6 +28,57 @@ Note: RECOMMENDED TO LEAVE IT AS `True`, if you set it `False`, be sure to CLOSE
 # Follow easy applied companies
 follow_companies = False            # True or False, Note: True or False are case-sensitive
 
+## >>>>>>>>>>> REFERRAL MESSAGING <<<<<<<<<<<
+
+# Master switch for auto-sending referral messages via LinkedIn DM and/or Gmail
+send_referral_dms = False           # True or False, Note: True or False are case-sensitive
+
+# Which channels to use for sending referral messages
+send_via_linkedin = True            # True or False — send via LinkedIn DM
+send_via_gmail = True               # True or False — send via Gmail email
+
+# LinkedIn DM template — uses {variable} placeholders
+linkedin_dm_template = """Hi {employee_name},
+
+I'm {your_name}, {your_role} at {your_company}. I'm reaching out because the {job_title} role at {company_name} lines up closely with my experience.
+
+Would you be open to referring me? Here's the job: {job_link}
+
+Best regards,
+{your_name}"""
+
+# Connection request note (used when the person is NOT already connected, so we
+# can't DM them). LinkedIn caps the personal note at 300 characters, so this is
+# intentionally short. Used by the connect-with-note outreach path.
+linkedin_connect_note = "Hi {employee_name}, I'm {your_name}, {your_role} at {your_company}. I'd love a referral for the {job_title} role at {company_name}. Would be great to connect! {job_link}"
+
+# Gmail subject line — uses {variable} placeholders
+gmail_subject = "Applying for {job_title} at {company_name} \u2013 can you help with referral?"
+
+# Gmail body template — uses {variable} placeholders
+gmail_body = """Hi {employee_name},
+
+I'm {your_name}, currently a {your_role} at {your_company} with about 3 years of hands-on experience delivering customer-facing solutions. I'm reaching out because the {job_title} role at {company_name} lines up closely with the way I work: ship fast, learn even faster, and solve real user problems with pragmatic AI and automation.
+
+What I bring: emerging talent with rapid learning potential, plus deep, practical expertise in CLI and Zapier. I've built internal CLIs that streamline developer workflows, automated complex cross-app processes with Zapier and Make, and used Grok and Claude to power robust agentic and retrieval-driven features. In a forward-deployed capacity, I translate ambiguous requirements into shipped solutions\u2014exactly the kind of bias to action and systems thinking a strong {job_title} at {company_name} needs.
+
+I'm particularly excited about {company_name} because of its bar for execution and learning culture. I thrive in environments where customer impact, thoughtful tooling, and reliable automation matter.
+
+Would you be open to referring me? If helpful, you can skim my background here as well: {your_linkedin}
+
+Here is the link to the job: {job_link}
+
+Best regards,
+{your_name}
+{your_portfolio}"""
+
+# Seconds to wait between messages (randomized, anti-detection)
+referral_dm_delay = 45              # Only Non Negative Integers
+
+# Max messages to send per channel per run
+referral_dm_max = 10                # Only Non Negative Integers
+
+
 ## Upcoming features (In Development)
 # # Send connection requests to HR's 
 # connect_hr = True                  # True or False, Note: True or False are case-sensitive

@@ -214,6 +214,18 @@
         table.jobs a:hover { text-decoration: underline; }
         .tick { color: var(--ok); font-weight: 700; }
         .muted-small { color: var(--muted); font-size: 13px; }
+        .referral-form { display: grid; gap: 12px; }
+        .referral-form label { display: block; font-weight: 600; font-size: 14px; margin-bottom: 4px; }
+        .referral-form input, .referral-form textarea {
+            width: 100%; padding: 9px 11px; border: 1px solid var(--line);
+            border-radius: 8px; font: inherit; color: var(--ink); background: #fff;
+        }
+        .referral-form textarea { min-height: 72px; resize: vertical; }
+        .referral-form input:focus, .referral-form textarea:focus {
+            outline: none; border-color: var(--brand); box-shadow: 0 0 0 3px rgba(37,99,235,.15);
+        }
+        .referral-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+        .referral-draft { min-height: 230px; white-space: pre-wrap; }
 
         /* --- Responsive --- */
         @media (max-width: 640px) {
@@ -236,6 +248,7 @@
         <div class="wrap">
             <h1>Auto Job Applier - Control Panel</h1>
             <p>Set up everything here, then open the Run tab to start. Nothing is uploaded - your details are saved only on this computer.</p>
+            <p id="setupBanner"></p>
         </div>
     </header>
 
@@ -422,6 +435,12 @@
             });
 
             // Extra "Run" tab (not part of the config schema).
+            var referralBtn = el('button', { type: 'button', text: 'Referrals' });
+            referralBtn.dataset.tab = 'Referrals';
+            referralBtn.addEventListener('click', function () { showTab('Referrals'); });
+            tabs.appendChild(referralBtn);
+            panels.appendChild(buildReferralPanel());
+
             var runBtn = el('button', { type: 'button', text: 'Run' });
             runBtn.dataset.tab = 'Run';
             runBtn.addEventListener('click', function () { showTab('Run'); });
@@ -444,6 +463,11 @@
                 p.classList.toggle('active', p.dataset.tab === name);
             });
             var isRun = (name === 'Run');
+            if (name === 'Referrals') {
+                refreshReferralDatalist('companyName'); refreshReferralDatalist('jobTitle'); prefillReferralFromConfig();
+                refreshReferralStatus();
+                refreshLicenseUsage();
+            }
             document.getElementById('savebar').style.display = isRun ? 'none' : 'flex';
             if (isRun) { refreshStatus(); refreshLogs(); loadAppliedJobs(); }
         }
@@ -531,6 +555,252 @@
             return panel;
         }
 
+        // ---- LinkedIn-first referral helper ----
+        function currentProfileText(configModule, key) {
+            var input = document.getElementById('f__' + configModule + '__' + key);
+            return input ? input.value.trim() : asText(currentValue(configModule, key)).trim();
+        }
+
+        // Read a config key as a list of values, honouring live (unsaved) edits in
+        // the form controls so the Referrals helper always reflects what you have
+        // already configured in Profile and Search - no re-typing needed.
+        function referralList(configModule, key) {
+            var input = document.getElementById('f__' + configModule + '__' + key);
+            if (input) {
+                return input.value.split(',').map(function (s) { return s.trim(); })
+                    .filter(function (s) { return s !== ''; });
+            }
+            var v = currentValue(configModule, key);
+            return Array.isArray(v) ? v.slice() : [];
+        }
+
+        function referralCompanyOptions() {
+            var opts = [];
+            function add(v) {
+                v = (v || '').trim();
+                if (v && v.toLowerCase() !== 'not applicable' && opts.indexOf(v) === -1) opts.push(v);
+            }
+            add(currentProfileText('questions', 'work_company'));
+            referralList('search', 'companies').forEach(add);
+            add(currentProfileText('questions', 'recent_employer'));
+            return opts;
+        }
+
+        function referralTitleOptions() {
+            var opts = [];
+            function add(v) {
+                v = (v || '').trim();
+                if (v && opts.indexOf(v) === -1) opts.push(v);
+            }
+            add(currentProfileText('questions', 'work_role'));
+            referralList('search', 'search_terms').forEach(add);
+            return opts;
+        }
+
+        function refreshReferralDatalist(fieldId) {
+            var dl = document.getElementById('refdl__' + fieldId);
+            var options = fieldId === 'companyName' ? referralCompanyOptions() : referralTitleOptions();
+            if (!dl) return;
+            dl.innerHTML = '';
+            options.forEach(function (opt) { dl.appendChild(el('option', { value: opt })); });
+        }
+
+        function prefillReferralFromConfig() {
+            var companies = referralCompanyOptions();
+            var titles = referralTitleOptions();
+            var company = document.getElementById('companyName');
+            var title = document.getElementById('jobTitle');
+            if (company && !company.value.trim()) {
+                var best = companies[0] || '';
+                company.value = best;
+            }
+            if (title && !title.value.trim()) {
+                title.value = (titles[0] || '');
+            }
+        }
+
+function buildReferralPanel() {
+            var panel = el('div', { class: 'panel' });
+            panel.dataset.tab = 'Referrals';
+            panel.appendChild(el('div', { class: 'note', text:
+                'Find the right employee on LinkedIn, personalize this message, and send it yourself. ' +
+                'This helper never guesses or stores another person\'s email address.' }));
+
+            // ---- Automatic referral finder ----
+            var findBox = el('div', { class: 'runbox' });
+            var findStatusLine = el('div', { class: 'status-line' });
+            findStatusLine.appendChild(el('span', { class: 'dot', id: 'referralStatusDot' }));
+            findStatusLine.appendChild(el('span', { id: 'referralStatusText', text: 'No scan yet.' }));
+            findBox.appendChild(findStatusLine);
+
+            var findActions = el('div', { class: 'run-actions' });
+            var findBtn = el('button', { class: 'btn', type: 'button', id: 'startReferralBtn', text: 'Find jobs where I have connections' });
+            var findStop = el('button', { class: 'btn danger', type: 'button', id: 'stopReferralBtn', text: 'Stop scan' });
+            findBtn.addEventListener('click', startReferralScan);
+            findStop.addEventListener('click', stopReferralScan);
+            findActions.appendChild(findBtn);
+            findActions.appendChild(findStop);
+            findBox.appendChild(findActions);
+            findBox.appendChild(el('p', { class: 'muted-small',
+                text: 'Searches your configured job searches and lists companies where LinkedIn shows "N connections work here". ' +
+                'You still send the message yourself; connection names are a LinkedIn Premium feature.' }));
+            findBox.appendChild(el('p', { class: 'muted-small', id: 'referralScanLimitText', style: 'margin-top:6px;' }));
+
+            var findHolder = el('div', { id: 'referralResultsHolder', style: 'margin:14px 0;' });
+            findHolder.appendChild(el('p', { class: 'muted-small', text: 'No results yet. Run a scan to find jobs where you have connections.' }));
+            findBox.appendChild(findHolder);
+            panel.appendChild(findBox);
+
+            // ---- One-click: scan + send in one run ----
+            var fullBox = el('div', { class: 'runbox', style: 'margin-top:14px; background:#f0f7ff; border:1px solid #b3d4ff; border-radius:6px;' });
+            fullBox.appendChild(el('h4', { text: 'Run Referral Scan + Send (one-click)' }));
+            fullBox.appendChild(el('p', { class: 'muted-small',
+                text: 'Scan for jobs where you have connections, then immediately send referral messages to the HR contacts found. ' +
+                'Both steps run in one browser session — no manual pause needed.' }));
+            var fullStatusLine = el('div', { class: 'status-line' });
+            fullStatusLine.appendChild(el('span', { class: 'dot', id: 'fullRefStatusDot' }));
+            fullStatusLine.appendChild(el('span', { id: 'fullRefStatusText', text: 'Ready.' }));
+            fullBox.appendChild(fullStatusLine);
+            var fullActions = el('div', { class: 'run-actions' });
+            var fullBtn = el('button', { class: 'btn', type: 'button', id: 'startFullRefBtn', text: 'Run scan + send' });
+            var fullStop = el('button', { class: 'btn danger', type: 'button', id: 'stopFullRefBtn', text: 'Stop' });
+            fullBtn.addEventListener('click', startFullReferral);
+            fullStop.addEventListener('click', stopFullReferral);
+            fullActions.appendChild(fullBtn);
+            fullActions.appendChild(fullStop);
+            fullBox.appendChild(fullActions);
+            fullBox.appendChild(el('p', { class: 'muted-small', style: 'margin-top:6px;', text: 'Paid plan: up to 4 scan(s) and 10 messages per day.' }));
+            panel.appendChild(fullBox);
+
+            var form = el('div', { class: 'referral-form' });
+            var fields = [
+                ['referrerName', 'Employee name', 'e.g. Priya Shah', 'text', null],
+                ['referrerLinkedIn', 'Employee LinkedIn profile (optional)', 'https://www.linkedin.com/in/...', 'url', null],
+                ['companyName', 'Company', 'Pick from your profile, or type one', 'text', 'companyOptions'],
+                ['jobTitle', 'Job title', 'Pick from your search terms, or type one', 'text', 'titleOptions'],
+                ['jobLink', 'Job link', 'https://www.linkedin.com/jobs/view/...', 'url', null],
+                ['fitNote', 'One relevant proof point (optional)', 'e.g. I shipped a RAG workflow that reduced support resolution time by 30%.', 'textarea', null]
+            ];
+            fields.forEach(function (field) {
+                var wrap = el('div', {});
+                wrap.appendChild(el('label', { for: field[0], text: field[1] }));
+                var control = field[3] === 'textarea'
+                    ? el('textarea', { id: field[0], placeholder: field[2] })
+                    : el('input', { id: field[0], type: field[3], placeholder: field[2] });
+                if (field[4]) {
+                    var dl = el('datalist', { id: 'refdl__' + field[0] });
+                    control.setAttribute('list', 'refdl__' + field[0]);
+                    control.addEventListener('focus', function () { refreshReferralDatalist(field[0]); });
+                    dl.classList.add('referral-datalist');
+                    wrap.appendChild(control);
+                    wrap.appendChild(dl);
+                } else {
+                    wrap.appendChild(control);
+                }
+                form.appendChild(wrap);
+            });
+
+            var actions = el('div', { class: 'referral-actions' });
+            var searchBtn = el('button', { class: 'btn secondary', type: 'button', text: 'Open LinkedIn employee search' });
+            var draftBtn = el('button', { class: 'btn', type: 'button', text: 'Create referral message' });
+            var profileBtn = el('button', { class: 'btn secondary', type: 'button', text: 'Open profile + copy message' });
+            actions.appendChild(searchBtn);
+            actions.appendChild(draftBtn);
+            actions.appendChild(profileBtn);
+            form.appendChild(actions);
+
+            form.appendChild(el('label', { for: 'referralDraft', text: 'LinkedIn message (review before sending)' }));
+            var draft = el('textarea', { id: 'referralDraft', class: 'referral-draft', readonly: 'readonly', placeholder: 'Your personalized message will appear here.' });
+            form.appendChild(draft);
+            var copyBtn = el('button', { class: 'btn secondary', type: 'button', text: 'Copy message' });
+            var status = el('p', { class: 'muted-small', id: 'referralStatus', text: 'Use LinkedIn contact info only when the employee has chosen to share it.' });
+            form.appendChild(copyBtn);
+            form.appendChild(status);
+            panel.appendChild(form);
+
+            searchBtn.addEventListener('click', function () {
+                var company = document.getElementById('companyName').value.trim();
+                var title = document.getElementById('jobTitle').value.trim();
+                if (!company) {
+                    status.textContent = 'Enter a company first, then search for employees.';
+                    return;
+                }
+                var keywords = company + (title ? ' ' + title : '');
+                window.open('https://www.linkedin.com/search/results/people/?keywords=' + encodeURIComponent(keywords), '_blank', 'noopener');
+            });
+
+            draftBtn.addEventListener('click', function () {
+                var referrer = document.getElementById('referrerName').value.trim();
+                var company = document.getElementById('companyName').value.trim();
+                var title = document.getElementById('jobTitle').value.trim();
+                var link = document.getElementById('jobLink').value.trim();
+                var proof = document.getElementById('fitNote').value.trim();
+                if (!referrer || !company || !title) {
+                    status.textContent = 'Employee name, company, and job title are required to create a message.';
+                    return;
+                }
+                if (link && !/^https:\/\//i.test(link)) {
+                    status.textContent = 'Use a full HTTPS job link, or leave the job link blank.';
+                    return;
+                }
+                var firstName = currentProfileText('personals', 'first_name');
+                var lastName = currentProfileText('personals', 'last_name');
+                var sender = (firstName + ' ' + lastName).trim() || 'a candidate';
+                var headline = currentProfileText('questions', 'linkedin_headline');
+                var intro = headline ? ' I\'m ' + headline + '.' : '';
+                var evidence = proof ? '\n\nRelevant experience: ' + proof : '';
+                var jobLine = link ? '\n\nJob link: ' + link : '';
+                draft.value = 'Hi ' + referrer + ' — I\'m ' + sender + '.' + intro +
+                    '\n\nI\'m applying for the ' + title + ' role at ' + company + '.' + evidence +
+                    '\n\nWould you be comfortable referring me? I\'m happy to send a tailored résumé or any details that make the referral easy. No worries at all if not.' + jobLine +
+                    '\n\nThanks,\n' + sender;
+                status.textContent = 'Draft ready. Personalize one sentence before you send it.';
+            });
+
+            profileBtn.addEventListener('click', function () {
+                var profile = document.getElementById('referrerLinkedIn').value.trim();
+                if (!/^https:\/\/www\.linkedin\.com\/in\/[A-Za-z0-9%_.-]+\/?(?:\?.*)?$/i.test(profile)) {
+                    status.textContent = 'Enter the employee\'s full LinkedIn profile URL (https://www.linkedin.com/in/...).';
+                    return;
+                }
+                if (!draft.value) draftBtn.click();
+                if (!draft.value) return;
+                window.open(profile, '_blank', 'noopener');
+                var copied = function () {
+                    status.textContent = 'Profile opened and message copied. Click Message in LinkedIn, paste, review, and send.';
+                };
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(draft.value).then(copied).catch(function () {
+                        draft.select();
+                        status.textContent = 'Profile opened. Copy the selected message, then paste it into LinkedIn.';
+                    });
+                } else {
+                    draft.select();
+                    status.textContent = 'Profile opened. Copy the selected message, then paste it into LinkedIn.';
+                }
+            });
+
+            copyBtn.addEventListener('click', function () {
+                if (!draft.value) {
+                    status.textContent = 'Create a message first.';
+                    return;
+                }
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(draft.value).then(function () {
+                        status.textContent = 'Copied. Paste it into LinkedIn and review it before sending.';
+                    }).catch(function () { draft.select(); status.textContent = 'Select the message and copy it manually.'; });
+                } else {
+                    draft.select();
+                    status.textContent = 'Select the message and copy it manually.';
+                }
+            });
+
+            // Build the auto-send messaging section
+            buildReferralMessagingUI(panel);
+
+            return panel;
+        }
+
         function setRunningUI(running, pid) {
             var dot = document.getElementById('statusDot');
             var text = document.getElementById('statusText');
@@ -593,8 +863,372 @@
                 .catch(function () {});
         }
 
+        // ---- automatic referral finder ----
+        var referralOffset = 0;
+        var referralPollTimer = null;
+
+        function refreshLicenseUsage() {
+            fetch('/api/license/status').then(function (r) { return r.json(); })
+                .then(function (s) {
+                    if (!s) return;
+                    var paid = s.paid;
+                    var scanText = document.getElementById('referralScanLimitText');
+                    var msgText = document.getElementById('referralMsgLimitText');
+                    var scanBtn = document.getElementById('startReferralBtn');
+                    var sendBtn = document.getElementById('startSendBtn');
+                    if (scanText) {
+                        if (paid) {
+                            scanText.textContent = 'Paid plan: up to ' + (s.referral_scan.paid_daily_limit || 'unlimited') + ' scan(s) per day. ' + s.referral_scan.used_today + ' used today.';
+                        } else {
+                            scanText.textContent = 'Free plan: up to ' + s.referral_scan.free_daily_limit + ' scan(s) per day. ' + s.referral_scan.used_today + ' used today. Upgrade for more.';
+                        }
+                        if (scanBtn) scanBtn.disabled = !s.referral_scan.can_scan;
+                    }
+                    if (msgText) {
+                        if (paid) {
+                            msgText.textContent = s.referral_message.remaining === null
+                                ? 'Paid plan: unlimited messages per day. ' + s.referral_message.used_today + ' sent today.'
+                                : 'Paid plan: ' + s.referral_message.remaining + ' message(s) left today.';
+                        } else {
+                            msgText.textContent = 'Free plan: up to ' + s.referral_message.free_daily_limit + ' message(s)/day. ' + s.referral_message.used_today + ' sent today. Upgrade for unlimited.';
+                        }
+                        if (sendBtn) sendBtn.disabled = !s.referral_message.can_send;
+                    }
+                })
+                .catch(function () {});
+        }
+
+        function setReferralUI(running) {
+            var dot = document.getElementById('referralStatusDot');
+            var text = document.getElementById('referralStatusText');
+            var start = document.getElementById('startReferralBtn');
+            var stop = document.getElementById('stopReferralBtn');
+            if (!text) return;
+            if (running) {
+                dot.classList.add('on');
+                text.textContent = 'Scan in progress - searching your configured job searches...';
+                if (start) start.disabled = true;
+                if (stop) stop.disabled = false;
+            } else {
+                dot.classList.remove('on');
+                text.textContent = 'Scan finished.';
+                if (start) start.disabled = false;
+                if (stop) stop.disabled = true;
+            }
+        }
+
+        function refreshReferralStatus() {
+            fetch('/api/referral/status').then(function (r) { return r.json(); })
+                .then(function (s) {
+                    setReferralUI(s.running);
+                    if (!s.running) { loadReferralResults(); refreshLicenseUsage(); }
+                })
+                .catch(function () {});
+        }
+
+        function refreshReferralLogs() {
+            fetch('/api/referral/logs?offset=' + referralOffset).then(function (r) { return r.json(); })
+                .then(function (data) {
+                    if (typeof data.next_offset === 'number' && data.next_offset < referralOffset) {
+                        referralOffset = 0;
+                    }
+                    if (typeof data.next_offset === 'number') referralOffset = data.next_offset;
+                })
+                .catch(function () {});
+        }
+
+        function startReferralScan() {
+            var msgOk = confirm('Start a referral scan?\n\nA browser window will open using your LinkedIn account and search your configured job searches for jobs where you have connections.');
+            if (!msgOk) return;
+            document.getElementById('referralResultsHolder').innerHTML = '';
+            referralOffset = 0;
+            fetch('/api/referral/run', { method: 'POST' }).then(function (r) { return r.json(); })
+                .then(function (s) {
+                    if (s.error) {
+                        var holder = document.getElementById('referralResultsHolder');
+                        holder.innerHTML = '';
+                        holder.appendChild(el('p', { class: 'muted-small', text: s.error || 'Could not start the scan.' }));
+                        refreshLicenseUsage();
+                        return;
+                    }
+                    setReferralUI(s.running);
+                    if (s.running) {
+                        if (referralPollTimer) clearInterval(referralPollTimer);
+                        referralPollTimer = setInterval(function () { refreshReferralStatus(); refreshReferralLogs(); }, 2000);
+                    }
+                })
+                .catch(function () {});
+        }
+
+        function stopReferralScan() {
+            fetch('/api/stop', { method: 'POST' }).then(function (r) { return r.json(); })
+                .then(function () { setReferralUI(false); })
+                .catch(function () {});
+        }
+
+        function useReferralResult(entry) {
+            document.getElementById('companyName').value = entry.company || '';
+            document.getElementById('jobTitle').value = entry.title || '';
+            document.getElementById('jobLink').value = entry.link || '';
+            var status = document.getElementById('referralStatus');
+            if (status) status.textContent = 'Job filled in from your referral scan. Add the employee\'s name, then create the message.';
+            document.getElementById('referrerName').focus();
+        }
+
+        function loadReferralResults() {
+            var holder = document.getElementById('referralResultsHolder');
+            if (!holder) return;
+            fetch('/api/referral/results').then(function (r) {
+                if (r.status === 404) {
+                    holder.innerHTML = '';
+                    holder.appendChild(el('p', { class: 'muted-small', text: 'No results yet. Run a scan to find jobs where you have connections.' }));
+                    return null;
+                }
+                return r.json();
+            }).then(function (data) {
+                if (!data || !Array.isArray(data.results)) return;
+                holder.innerHTML = '';
+                if (data.results.length === 0) {
+                    holder.appendChild(el('p', { class: 'muted-small', text: 'No jobs with connections found. Try broader keywords or more locations.' }));
+                    return;
+                }
+                var intro = el('p', { class: 'muted-small',
+                    text: 'Found ' + data.results.length + ' job(s) where LinkedIn shows your connections work at the company (' + (data.generated_at || 'recently') + '). Click a row\'s "Use in message" to fill in the form below.' });
+                holder.appendChild(intro);
+                var table = el('table', { class: 'jobs' });
+                var thead = el('thead');
+                var hr = el('tr');
+                ['#', 'Company', 'Job Title', 'Location', 'Connections', 'Link', ''].forEach(function (h) {
+                    hr.appendChild(el('th', { text: h }));
+                });
+                thead.appendChild(hr);
+                table.appendChild(thead);
+                var tbody = el('tbody');
+                data.results.forEach(function (job, i) {
+                    var tr = el('tr');
+                    tr.appendChild(el('td', { text: String(i + 1) }));
+                    tr.appendChild(el('td', { text: job.company || '' }));
+                    tr.appendChild(el('td', { text: job.title || '' }));
+                    tr.appendChild(el('td', { text: job.location || '' }));
+                    tr.appendChild(el('td', { text: String(job.connection_count || '') }));
+                    var linkCell = el('td');
+                    if (job.link) {
+                        linkCell.appendChild(el('a', { href: job.link, target: '_blank', rel: 'noopener', text: 'View job' }));
+                    }
+                    tr.appendChild(linkCell);
+                    var useCell = el('td');
+                    var useBtn = el('button', { class: 'btn secondary', type: 'button', text: 'Use in message' });
+                    useBtn.addEventListener('click', function () { useReferralResult(job); });
+                    useCell.appendChild(useBtn);
+                    tr.appendChild(useCell);
+                    tbody.appendChild(tr);
+                });
+                table.appendChild(tbody);
+                holder.appendChild(table);
+            }).catch(function () {});
+        }
+
+        // ---- Referral messaging (LinkedIn DM + Gmail) ----
+        function buildReferralMessagingUI(panel) {
+            var msgBox = el('div', { class: 'runbox', style: 'margin-top:18px; border-top:1px solid #e0e0e0; padding-top:14px;' });
+            msgBox.appendChild(el('h4', { text: 'Send Referral Messages' }));
+            msgBox.appendChild(el('p', { class: 'muted-small',
+                text: 'Automatically send referral request messages to HR contacts found during the referral scan. ' +
+                'Messages are sent via LinkedIn DM and/or Gmail using your configured templates.' }));
+
+            // Channel toggles
+            var toggles = el('div', { style: 'display:flex; gap:16px; margin:10px 0; flex-wrap:wrap;' });
+            var linkedinToggle = el('label', { style: 'display:flex; align-items:center; gap:6px; cursor:pointer;' });
+            linkedinToggle.appendChild(el('input', { type: 'checkbox', id: 'sendViaLinkedin', checked: 'checked' }));
+            linkedinToggle.appendChild(el('span', { text: 'LinkedIn DM' }));
+            var gmailToggle = el('label', { style: 'display:flex; align-items:center; gap:6px; cursor:pointer;' });
+            gmailToggle.appendChild(el('input', { type: 'checkbox', id: 'sendViaGmail', checked: 'checked' }));
+            gmailToggle.appendChild(el('span', { text: 'Gmail' }));
+            toggles.appendChild(linkedinToggle);
+            toggles.appendChild(gmailToggle);
+            msgBox.appendChild(toggles);
+
+            // Send button + status
+            var sendBox = el('div', { class: 'runbox' });
+            var sendStatusLine = el('div', { class: 'status-line' });
+            sendStatusLine.appendChild(el('span', { class: 'dot', id: 'sendStatusDot' }));
+            sendStatusLine.appendChild(el('span', { id: 'sendStatusText', text: 'Ready to send.' }));
+            sendBox.appendChild(sendStatusLine);
+
+            var sendActions = el('div', { class: 'run-actions' });
+            var sendBtn = el('button', { class: 'btn', type: 'button', id: 'startSendBtn', text: 'Send referral messages' });
+            var sendStop = el('button', { class: 'btn danger', type: 'button', id: 'stopSendBtn', text: 'Stop sending' });
+            sendBtn.addEventListener('click', startReferralSend);
+            sendStop.addEventListener('click', stopReferralSend);
+            sendActions.appendChild(sendBtn);
+            sendActions.appendChild(sendStop);
+            sendBox.appendChild(sendActions);
+            sendBox.appendChild(el('p', { class: 'muted-small', id: 'referralMsgLimitText', style: 'margin-top:6px;' }));
+            msgBox.appendChild(sendBox);
+
+            // Send logs
+            var sendLogHolder = el('div', { id: 'sendLogHolder', style: 'margin:10px 0;' });
+            var sendLogPre = el('pre', { id: 'sendLogContent', style: 'max-height:200px; overflow:auto; font-size:12px; background:#f5f5f5; padding:8px; border-radius:4px;', text: 'No messages sent yet.' });
+            sendLogHolder.appendChild(sendLogPre);
+            msgBox.appendChild(sendLogHolder);
+
+            // Message log table
+            var msgLogHolder = el('div', { id: 'msgLogHolder', style: 'margin-top:14px;' });
+            msgLogHolder.appendChild(el('h5', { text: 'Message History' }));
+            msgLogHolder.appendChild(el('p', { class: 'muted-small', text: 'No messages sent yet.' }));
+            msgBox.appendChild(msgLogHolder);
+
+            panel.appendChild(msgBox);
+        }
+
+        var sendPollTimer = null;
+        var sendLogOffset = 0;
+
+        function startReferralSend() {
+            var linkedinOn = document.getElementById('sendViaLinkedin').checked;
+            var gmailOn = document.getElementById('sendViaGmail').checked;
+            if (!linkedinOn && !gmailOn) {
+                alert('Enable at least one channel (LinkedIn DM or Gmail) before sending.');
+                return;
+            }
+            if (!confirm('Start sending referral messages?\n\nLinkedIn DM: ' + (linkedinOn ? 'ON' : 'OFF') + '\nGmail: ' + (gmailOn ? 'ON' : 'OFF') + '\n\nThe bot will open a browser, visit each HR profile, and send your message.')) return;
+
+            sendLogOffset = 0;
+            fetch('/api/referral/send', { method: 'POST' }).then(function (r) { return r.json(); }).then(function (data) {
+                if (data.error) { alert(data.error); return; }
+                document.getElementById('sendStatusDot').className = 'dot running';
+                document.getElementById('sendStatusText').textContent = 'Sending... (PID ' + (data.pid || '?') + ')';
+                if (sendPollTimer) clearInterval(sendPollTimer);
+                sendPollTimer = setInterval(function () { refreshSendStatus(); refreshSendLogs(); }, 2000);
+            }).catch(function (e) { alert('Failed to start: ' + e); });
+        }
+
+        function stopReferralSend() {
+            fetch('/api/stop', { method: 'POST' }).then(function (r) { return r.json(); }).then(function () {
+                document.getElementById('sendStatusDot').className = 'dot';
+                document.getElementById('sendStatusText').textContent = 'Stopped.';
+                if (sendPollTimer) { clearInterval(sendPollTimer); sendPollTimer = null; }
+            });
+        }
+
+        // ---- One-click referral: scan + send in one subprocess ----
+        var fullRefPollTimer = null;
+
+        function startFullReferral() {
+            if (!confirm('Run referral scan + send?\n\n1) Scan your configured searches for jobs with connections\n' +
+                '2) Send referral messages to HR contacts found\n\n' +
+                'The bot will open one browser session and do both steps automatically.')) return;
+
+            sendLogOffset = 0;
+            fetch('/api/referral/full', { method: 'POST' }).then(function (r) { return r.json(); }).then(function (data) {
+                if (data.error) { alert(data.error); return; }
+                document.getElementById('fullRefStatusDot').className = 'dot running';
+                document.getElementById('fullRefStatusText').textContent = 'Running scan + send... (PID ' + (data.pid || '?') + ')';
+                if (fullRefPollTimer) clearInterval(fullRefPollTimer);
+                fullRefPollTimer = setInterval(refreshFullRefStatus, 3000);
+                // Also start the send-log poller so logs stream in
+                if (sendPollTimer) clearInterval(sendPollTimer);
+                sendPollTimer = setInterval(function () { refreshSendLogs(); }, 2000);
+            }).catch(function (e) { alert('Failed to start: ' + e); });
+        }
+
+        function stopFullReferral() {
+            fetch('/api/stop', { method: 'POST' }).then(function (r) { return r.json(); }).then(function () {
+                document.getElementById('fullRefStatusDot').className = 'dot';
+                document.getElementById('fullRefStatusText').textContent = 'Stopped.';
+                if (fullRefPollTimer) { clearInterval(fullRefPollTimer); fullRefPollTimer = null; }
+                if (sendPollTimer) { clearInterval(sendPollTimer); sendPollTimer = null; }
+            });
+        }
+
+        function refreshFullRefStatus() {
+            fetch('/api/referral/send/status').then(function (r) { return r.json(); }).then(function (data) {
+                var dot = document.getElementById('fullRefStatusDot');
+                var text = document.getElementById('fullRefStatusText');
+                if (!dot || !text) return;
+                if (data.running) {
+                    dot.className = 'dot running';
+                    text.textContent = 'Running scan + send... (PID ' + (data.pid || '?') + ')';
+                } else {
+                    dot.className = 'dot';
+                    text.textContent = 'Finished. Check the log below for results.';
+                    if (fullRefPollTimer) { clearInterval(fullRefPollTimer); fullRefPollTimer = null; }
+                    if (sendPollTimer) { clearInterval(sendPollTimer); sendPollTimer = null; }
+                    refreshSendLogs();
+                    loadMsgLog();
+                    refreshLicenseUsage();
+                }
+            });
+        }
+
+        function refreshSendStatus() {
+            fetch('/api/referral/send/status').then(function (r) { return r.json(); }).then(function (data) {
+                var dot = document.getElementById('sendStatusDot');
+                var text = document.getElementById('sendStatusText');
+                if (!dot || !text) return;
+                if (data.running) {
+                    dot.className = 'dot running';
+                    text.textContent = 'Sending... (PID ' + (data.pid || '?') + ')';
+                } else {
+                    dot.className = 'dot';
+                    text.textContent = 'Finished. Check the log below for results.';
+                    if (sendPollTimer) { clearInterval(sendPollTimer); sendPollTimer = null; }
+                    loadMsgLog();
+                    refreshLicenseUsage();
+                }
+            });
+        }
+
+        function refreshSendLogs() {
+            fetch('/api/referral/send/logs?offset=' + sendLogOffset).then(function (r) { return r.json(); }).then(function (data) {
+                var pre = document.getElementById('sendLogContent');
+                if (!pre) return;
+                if (data.content) {
+                    pre.textContent += data.content;
+                    pre.scrollTop = pre.scrollHeight;
+                }
+                if (typeof data.next_offset === 'number') sendLogOffset = data.next_offset;
+            });
+        }
+
+        function loadMsgLog() {
+            var holder = document.getElementById('msgLogHolder');
+            if (!holder) return;
+            fetch('/api/referral/send/log').then(function (r) { return r.json(); }).then(function (data) {
+                holder.innerHTML = '';
+                holder.appendChild(el('h5', { text: 'Message History' }));
+                if (!data.rows || data.rows.length === 0) {
+                    holder.appendChild(el('p', { class: 'muted-small', text: 'No messages sent yet.' }));
+                    return;
+                }
+                holder.appendChild(el('p', { class: 'muted-small', text: data.count + ' message(s) logged.' }));
+                var table = el('table', { class: 'jobs' });
+                var thead = el('thead');
+                var hr = el('tr');
+                ['Time', 'HR Name', 'Company', 'Channel', 'Status', 'Error'].forEach(function (h) {
+                    hr.appendChild(el('th', { text: h }));
+                });
+                thead.appendChild(hr);
+                table.appendChild(thead);
+                var tbody = el('tbody');
+                data.rows.forEach(function (row) {
+                    var tr = el('tr');
+                    tr.appendChild(el('td', { text: row['Timestamp'] || '' }));
+                    tr.appendChild(el('td', { text: row['HR Name'] || '' }));
+                    tr.appendChild(el('td', { text: row['Company'] || '' }));
+                    tr.appendChild(el('td', { text: row['Channel'] || '' }));
+                    tr.appendChild(el('td', { text: row['Status'] || '' }));
+                    tr.appendChild(el('td', { text: row['Error'] || '' }));
+                    tbody.appendChild(tr);
+                });
+                table.appendChild(tbody);
+                holder.appendChild(table);
+            }).catch(function () {});
+        }
+
         function pollLoop() {
             if (activeTab === 'Run') { refreshStatus(); refreshLogs(); }
+            if (activeTab === 'Referrals') { refreshReferralStatus(); refreshReferralLogs(); refreshSendStatus(); refreshSendLogs(); }
             pollTimer = setTimeout(pollLoop, 1500);
         }
 
@@ -757,6 +1391,23 @@
             });
         }
 
+        function loadSetupBanner() {
+            var host = document.getElementById('setupBanner');
+            fetch('/api/setup/flow').then(function (r) { return r.json(); }).then(function (flow) {
+                if (flow.complete) {
+                    var names = { resume: 'Your resume', wants: 'What you want', policy: 'Ask-before-sending' };
+                    var links = flow.steps.filter(function (s) { return names[s.id]; })
+                        .map(function (s) { return '<a href="/setup?edit=' + s.id + '" style="color:#1a7f37;font-weight:600;">' + names[s.id] + '</a>'; })
+                        .join(' · ');
+                    host.innerHTML = 'You\'re all set! Want to change anything? — ' + links;
+                } else {
+                    host.innerHTML = '<a href="/setup" style="color:#1a7f37;font-weight:600;">Let\'s get you ready: quick setup (resume, what you want, ask-before-sending)</a>';
+                }
+            }).catch(function () {
+                host.innerHTML = '<a href="/setup" style="color:#1a7f37;font-weight:600;">Let\'s get you ready: quick setup</a>';
+            });
+        }
+
         document.getElementById('saveBtn').addEventListener('click', saveConfig);
         document.getElementById('reloadBtn').addEventListener('click', function () {
             document.getElementById('saveMsg').textContent = 'Reloading saved settings...';
@@ -764,6 +1415,7 @@
         });
 
         loadAll();
+        loadSetupBanner();
         pollLoop();
     </script>
 </body>

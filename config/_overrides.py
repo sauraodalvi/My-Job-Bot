@@ -29,6 +29,15 @@ def _root_dir() -> str:
 _USER_ROOT = _root_dir()
 USER_CONFIG_PATH = os.path.join(_USER_ROOT, "user_config.json")
 
+# Keys in user_config.json that should NEVER override the code defaults. A stale
+# value written by an older build could otherwise permanently lock a setting at an
+# unintended value (e.g. referral_dm_max left at 1 silently caps messaging to one
+# DM/Gmail per run). Removing a key from the config file or updating it is not
+# enough when an old value is already persisted for a shipped user.
+NO_OVERRIDE_KEYS = {
+    "referral_dm_max",  # per-run message ceiling - keep the code default (10)
+}
+
 
 def load_user_config() -> dict:
     '''
@@ -58,5 +67,5 @@ def apply(module_name: str, module_globals: dict) -> None:
     if not isinstance(section, dict):
         return
     for key, value in section.items():
-        if key in module_globals:
+        if key in module_globals and key not in NO_OVERRIDE_KEYS:
             module_globals[key] = value

@@ -92,6 +92,15 @@ pause_after_filters = True         # True or False, Note: True or False are case
 # Avoid applying to these companies, and companies with these bad words in their 'About Company' section...
 about_company_bad_words = ["Crossover"]       # (dynamic multiple search) or leave empty as []. Ex: ["Staffing", "Recruiting", "Name of Company you don't want to apply to"]
 
+# Skip ALL jobs from these exact company names, by matching the company name shown on the job card.
+# Unlike `about_company_bad_words` above (which matches the company's 'About' section text), this is a
+# hard block on the company name itself, so it works even when the 'About' blur is empty or unrelated.
+skip_companies = []                           # (dynamic multiple search) or leave empty as []. Ex: ["Crossover", "Jobgethe", "FlytBase"]
+
+# Automatically add the companies found on your resume (past/current employers) to the skip list above.
+# Past employers are almost never worth applying to, and it avoids embarrassing re-applications.
+skip_resume_companies = True                  # True or False, Note: True or False are case-sensitive
+
 # Skip checking for `about_company_bad_words` for these companies if they have these good words in their 'About Company' section... [Exceptions, For example, I want to apply to "Robert Half" although it's a staffing company]
 about_company_good_words = []      # (dynamic multiple search) or leave empty as []. Ex: ["Robert Half", "Dice"]
 

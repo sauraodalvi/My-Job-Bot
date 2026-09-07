@@ -44,7 +44,7 @@ def _clean_stale_temp_profile_chrome() -> None:
         temp_p = get_default_temp_profile()
         if not temp_p:
             return
-        profile_token = temp_p.replace("\\", "\\\\").replace("'", "''")
+        profile_token = temp_p.replace("'", "''")
         script = (
             "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" "
             "| Where-Object { $_.CommandLine -like '*" + profile_token + "*' } "

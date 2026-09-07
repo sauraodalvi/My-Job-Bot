@@ -1,4 +1,5 @@
 import importlib
+import json
 import os
 import subprocess
 import sys
@@ -32,6 +33,17 @@ def main() -> int:
     if not os.path.exists(config_path):
         return run_setup()
 
+    # Returning customer with a config: if they are still on the Free plan (no
+    # license key saved) and aren't in an automated/smoke run, pop the wizard's
+    # "Unlock" step so they can enter their Gumroad key before the bot starts.
+    if not os.environ.get("AJA_SMOKE") == "1" and _on_free_plan(config_path):
+        print("No license key yet - opening the Unlock step to activate unlimited applications.")
+        try:
+            import setup_wizard
+            setup_wizard.run_gui(initial_step=5)
+        except Exception as e:
+            print("Could not open the Unlock window:", e)
+
     if os.environ.get("AJA_SMOKE") == "1":
         if getattr(sys, "frozen", False):
             print("AJA exe smoke OK")
@@ -43,6 +55,17 @@ def main() -> int:
     return run_bot()
 
 
+def _on_free_plan(config_path: str) -> bool:
+    '''True if user_config.json holds no active license key (Free plan).'''
+    try:
+        with open(config_path, "r", encoding="utf-8") as file:
+            data = json.load(file)
+        key = (data.get("secrets", {}).get("gumroad_license_key") or "").strip()
+        return not bool(key)
+    except (OSError, ValueError):
+        return False
+
+
 def run_setup() -> int:
     import setup_wizard
     setup_wizard.run_gui()
@@ -50,10 +73,8 @@ def run_setup() -> int:
 
 
 def run_bot() -> int:
-    run_bat = os.path.join(app_base_dir(), "start_bot.bat")
-    if getattr(sys, "frozen", False):
-        print("AutoJobApplier.exe: launching the app engine...\n")
-        return subprocess.call(["cmd", "/c", run_bat])
+    # Bundled exe: run the engine from inside the package (all modules ship in
+    # the onefile). Source checkout: run it directly too.
     runAiBot = importlib.import_module("runAiBot")
     runAiBot.main()
     return 0
