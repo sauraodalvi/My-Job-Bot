@@ -32,6 +32,34 @@ AutoJobApplier.exe
 .diag_*.err.log
 _diag_*.py
 _diag_*.html
+_diag_*.png
+_diag_*.json
+
+# Referral-finder runtime (logs, PID files, results, message history)
+.referral_*.log
+.referral_*.pid
+referral_send_*.log
+referral_usage.json
+referral_results.json
+referral_message_log.csv
+
+# Config backups — contain credentials; keep them off git entirely
+user_config.json.bak-*
+
+# Local dev helpers & misc artifacts
+.serve_tmp.py
+se-metadata.json
+
+# Unused/abandoned local dependencies
+node_modules/
+package.json
+package-lock.json
+
+# Marketing & purchased-content collateral (kept out of the repo)
+gumroad_content/
+gumroad_content.zip
+landing page/
+LANDING_COPY_PLAN.md
 
 # AI question-answer cache (auto-generated, contains personal answers)
 question_answer_cache.json
