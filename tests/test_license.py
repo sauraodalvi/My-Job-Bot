@@ -251,3 +251,55 @@ def test_test_key_acts_paid(monkeypatch):
     assert license_mod.is_paid() is True
     assert license_mod.can_submit() is True   # never blocked
     assert license_mod.remaining_today() is None
+
+
+# ---------------------------------------------------------------------------
+# Per-job referral log (referral_job_log.json) — "one job = one referral"
+# ---------------------------------------------------------------------------
+
+def test_referral_sent_for_job_missing_is_false(monkeypatch, tmp_path):
+    monkeypatch.setattr(license_mod, "REFERRAL_JOB_LOG_PATH", str(tmp_path / "job_log.json"))
+    assert license_mod.referral_sent_for_job("4444967350") is False
+    assert license_mod.referral_sent_for_job("") is False
+
+
+def test_record_and_check_referral_job_sent(monkeypatch, tmp_path):
+    log = tmp_path / "job_log.json"
+    monkeypatch.setattr(license_mod, "REFERRAL_JOB_LOG_PATH", str(log))
+    assert license_mod.referral_sent_for_job("4444967350") is False
+
+    license_mod.record_referral_job_sent("4444967350", {"company": "Acme", "title": "PM", "hr_name": "M"})
+    assert license_mod.referral_sent_for_job("4444967350") is True
+    assert license_mod.referral_sent_for_job("other") is False
+    data = json.loads(log.read_text(encoding="utf-8"))
+    assert data["4444967350"]["company"] == "Acme"
+    assert data["4444967350"]["title"] == "PM"
+    assert license_mod.referral_jobs_sent_total() == 1
+
+
+def test_referral_job_log_persists_across_calls(monkeypatch, tmp_path):
+    log = tmp_path / "job_log.json"
+    monkeypatch.setattr(license_mod, "REFERRAL_JOB_LOG_PATH", str(log))
+    license_mod.record_referral_job_sent("111", {})
+    license_mod.record_referral_job_sent("222", {})
+    # Reload from disk (simulating a fresh process) must still see both jobs.
+    assert license_mod.referral_jobs_sent_total() == 2
+    assert license_mod.referral_sent_for_job("111") is True
+    assert license_mod.referral_sent_for_job("222") is True
+
+
+def test_record_referral_job_sent_empty_key_does_nothing(monkeypatch, tmp_path):
+    log = tmp_path / "job_log.json"
+    monkeypatch.setattr(license_mod, "REFERRAL_JOB_LOG_PATH", str(log))
+    license_mod.record_referral_job_sent("", {})
+    license_mod.record_referral_job_sent(None, {})
+    assert license_mod.referral_jobs_sent_total() == 0
+    assert not log.exists()
+
+
+def test_referral_job_log_corrupt_file_is_ignored(monkeypatch, tmp_path):
+    log = tmp_path / "job_log.json"
+    monkeypatch.setattr(license_mod, "REFERRAL_JOB_LOG_PATH", str(log))
+    log.write_text("{ not json", encoding="utf-8")
+    assert license_mod.referral_sent_for_job("111") is False
+    assert license_mod.referral_jobs_sent_total() == 0

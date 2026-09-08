@@ -78,6 +78,26 @@ referral_dm_delay = 45              # Only Non Negative Integers
 # Max messages to send per channel per run
 referral_dm_max = 10                # Only Non Negative Integers
 
+# Curated personalized-DM pipeline (--send-personalized):
+# A list of people YOU want to message, instead of auto-discovering
+# connections per job. Each entry needs at least a name (or a profile URL).
+referral_targets_file = "referral_targets.json"
+
+# Use the AI client (when configured) to draft a hyper-personalized message
+# from the person's scraped profile + the job. Falls back to the programmatic
+# template when AI is off/unconfigured or the draft fails.
+referral_ai_draft = True
+
+# Seconds to wait between sends in the curated personalized mode (faster than
+# the discovery mode because you pre-picked the targets).
+referral_personalized_delay = 25
+
+# The minimum number of referral messages we aim to send per run. At the end of
+# a messaging run we compare the actual distinct jobs messaged against this
+# target and report any shortfall so you know to run again (or add more
+# targets) to hit the goal.
+referral_target_count = 10
+
 
 ## Upcoming features (In Development)
 # # Send connection requests to HR's 

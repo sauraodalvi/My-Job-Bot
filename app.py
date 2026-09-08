@@ -616,12 +616,15 @@ def api_referral_run():
     '''Starts the bot in referral-find mode if neither an apply run nor a
     referral run is already active.'''
     global _referral_proc
-    if not can_scan_referral():
-        remaining = referral_scan_remaining() or 0
-        return jsonify({"running": False, "error": f"Referral scan daily limit reached ({remaining} left). Upgrade for more scans per day."}), 403
+    # A running apply bot is a hard conflict and takes priority over the daily
+    # allowance — reorder so the 409 is reported even when the free scan limit
+    # has also been used.
     with _bot_lock:
         if _is_running():
             return jsonify({"running": False, "error": "The main tool is running. Stop it before a referral scan."}), 409
+    if not can_scan_referral():
+        remaining = referral_scan_remaining() or 0
+        return jsonify({"running": False, "error": f"Referral scan daily limit reached ({remaining} left). Upgrade for more scans per day."}), 403
     with _referral_lock:
         if _referral_is_running():
             return jsonify({"running": True, "pid": _referral_proc.pid,
@@ -703,15 +706,18 @@ def api_referral_send():
     '''Starts the bot in send-referrals mode. Enriches referral results with
     HR info, then sends LinkedIn DMs and/or Gmail emails.'''
     global _send_proc
-    if not can_send_referral():
-        remaining = referral_msg_remaining() or 0
-        return jsonify({"running": False, "error": f"Referral message daily limit reached ({remaining} left). Upgrade for unlimited messages."}), 403
+    # A running apply bot is a hard conflict and takes priority over the daily
+    # allowance — reorder so the 409 is reported even when the free message
+    # limit has also been used.
     with _bot_lock:
         if _is_running():
             return jsonify({"running": False, "error": "The main tool is running. Stop it first."}), 409
     with _referral_lock:
         if _referral_is_running():
             return jsonify({"running": False, "error": "A referral scan is running. Wait for it to finish."}), 409
+    if not can_send_referral():
+        remaining = referral_msg_remaining() or 0
+        return jsonify({"running": False, "error": f"Referral message daily limit reached ({remaining} left). Upgrade for unlimited messages."}), 403
     with _send_lock:
         if _send_is_running():
             return jsonify({"running": True, "pid": _send_proc.pid,

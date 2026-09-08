@@ -356,7 +356,32 @@ def test_referral_run_blocked_while_bot_running(client, monkeypatch):
             return None
 
     monkeypatch.setattr(app, "_bot_proc", FakeProc())
+    # Force BOTH the running-bot conflict AND the daily-scan-limit-reached to be
+    # true simultaneously. The running bot (hard conflict, 409) must win over the
+    # allowance 403 — this locks in the route ordering and keeps the test isolated
+    # from any leftover referral_usage.json in the working directory.
+    monkeypatch.setattr(app, "can_scan_referral", lambda: False)
+    monkeypatch.setattr(app, "referral_scan_remaining", lambda: 0)
     resp = client.post("/api/referral/run")
+    assert resp.status_code == 409
+    assert resp.get_json()["running"] is False
+
+
+def test_referral_send_blocked_while_bot_running(client, monkeypatch):
+    import app
+    monkeypatch.setattr(app, "_send_proc", None)
+    monkeypatch.setattr(app, "_referral_proc", None)
+    monkeypatch.setattr(app, "REFERRAL_SEND_PID_PATH", str(client.application.root_path) + "/.send.pid")
+
+    class FakeProc:
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(app, "_bot_proc", FakeProc())
+    # Running bot + daily-message-limit reached -> conflict (409) must take priority.
+    monkeypatch.setattr(app, "can_send_referral", lambda: False)
+    monkeypatch.setattr(app, "referral_msg_remaining", lambda: 0)
+    resp = client.post("/api/referral/send")
     assert resp.status_code == 409
     assert resp.get_json()["running"] is False
 
@@ -383,6 +408,10 @@ def test_referral_full_blocked_while_bot_running(client, monkeypatch):
             return None
 
     monkeypatch.setattr(app, "_bot_proc", FakeProc())
+    # Running bot + scan allowance used -> conflict (409) must take priority so
+    # the ordering stays consistent across all three referral routes.
+    monkeypatch.setattr(app, "can_scan_referral", lambda: False)
+    monkeypatch.setattr(app, "can_send_referral", lambda: False)
     resp = client.post("/api/referral/full")
     assert resp.status_code == 409
     assert resp.get_json()["running"] is False

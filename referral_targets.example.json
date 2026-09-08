@@ -1,0 +1,22 @@
+{
+  "targets": [
+    {
+      "name": "Martina Santoro",
+      "profile_url": "https://www.linkedin.com/in/martina-santoro",
+      "job_url": "https://www.linkedin.com/jobs/view/4444967350",
+      "job_id": "4444967350",
+      "title": "Senior Product Manager",
+      "company": "Product Heroes",
+      "note": ""
+    },
+    {
+      "name": "Haissam Abdul Malak",
+      "profile_url": "https://www.linkedin.com/in/haissamabdulmalak",
+      "job_url": "https://www.linkedin.com/jobs/view/4444967350",
+      "job_id": "4444967350",
+      "title": "Senior Product Manager",
+      "company": "Product Heroes",
+      "note": ""
+    }
+  ]
+}

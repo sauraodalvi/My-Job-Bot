@@ -42,6 +42,9 @@ referral_send_*.log
 referral_usage.json
 referral_results.json
 referral_message_log.csv
+referral_msg_usage.json
+referral_job_log.json
+usage.json
 
 # Config backups — contain credentials; keep them off git entirely
 user_config.json.bak-*

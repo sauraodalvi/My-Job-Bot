@@ -63,6 +63,7 @@ def _root_dir() -> str:
 USAGE_PATH = os.path.join(_root_dir(), "usage.json")
 REFERRAL_USAGE_PATH = os.path.join(_root_dir(), "referral_usage.json")
 REFERRAL_MSG_USAGE_PATH = os.path.join(_root_dir(), "referral_msg_usage.json")
+REFERRAL_JOB_LOG_PATH = os.path.join(_root_dir(), "referral_job_log.json")
 USER_CONFIG_PATH = os.path.join(_root_dir(), "user_config.json")
 
 
@@ -362,3 +363,63 @@ def show_referral_upsell(feature: str = "scan") -> None:
         title = "Referral message limit reached"
     print("LICENSE: " + message.replace("\n", " ").strip())
     _maybe_popup(message, title)
+
+
+# ---------------------------------------------------------------------------
+# Per-job referral log (referral_job_log.json)
+# ---------------------------------------------------------------------------
+#
+# Guarantees the "one job = one referral" rule. Once a referral message has been
+# sent for a given job_id it is recorded here so that no later run ever sends a
+# second referral to the same job posting (even if the job resurfaces in a fresh
+# scan, or a job matches multiple HR contacts). The file maps job_id -> record.
+
+def _load_referral_job_log() -> dict:
+    '''Read the persisted per-job referral log ({} when missing/stale).'''
+    try:
+        with open(REFERRAL_JOB_LOG_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return data
+    except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError):
+        pass
+    return {}
+
+
+def _save_referral_job_log(log: dict) -> None:
+    try:
+        with open(REFERRAL_JOB_LOG_PATH, "w", encoding="utf-8") as f:
+            json.dump(log, f, indent=2, ensure_ascii=False)
+    except OSError as e:
+        print("License: could not save referral job log.", e)
+
+
+def referral_sent_for_job(job_id) -> bool:
+    '''True when a referral has already been sent for this job_id.'''
+    if not str(job_id or "").strip():
+        return False
+    return str(job_id) in _load_referral_job_log()
+
+
+def record_referral_job_sent(job_id, job: dict = None) -> None:
+    '''Record that a referral message has been sent for this job. If the job_id is
+    empty (e.g. personalized mode with inline targets), the entry is keyed by the
+    profile URL so per-person outreach is still tracked once.'''
+    key = str(job_id or "").strip() or str((job or {}).get("hr_link") or "").strip()
+    if not key:
+        return
+    from datetime import datetime
+    log = _load_referral_job_log()
+    log[key] = {
+        "job_id": str(job_id or ""),
+        "company": (job or {}).get("company", ""),
+        "title": (job or {}).get("title", ""),
+        "hr_name": (job or {}).get("hr_name", ""),
+        "sent_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    _save_referral_job_log(log)
+
+
+def referral_jobs_sent_total() -> int:
+    '''The number of distinct jobs/people that have ever had a referral sent.'''
+    return len(_load_referral_job_log())

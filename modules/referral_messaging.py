@@ -20,13 +20,17 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.keys import Keys
 
 from modules.helpers import buffer, print_lg, sleep
-from modules.license import can_send_referral, record_referral_message, referral_msg_remaining
+from modules.license import (
+    can_send_referral, record_referral_message, referral_msg_remaining,
+    referral_sent_for_job, record_referral_job_sent,
+)
 from modules import dry_run
+from modules import events
 from modules.dry_run import is_dry_run
 from config.settings import (
     send_via_linkedin, send_via_gmail,
     linkedin_dm_template, linkedin_connect_note, gmail_subject, gmail_body,
-    referral_dm_delay, referral_dm_max,
+    referral_dm_delay, referral_dm_max, referral_target_count,
 )
 from config.personals import (
     first_name, last_name, current_city,
@@ -49,7 +53,8 @@ USER_DATA = {
 
 
 # ---------------------------------------------------------------------------
-# Connection resolver: find 1st-degree connections at a company via people search
+# Connection resolver: find 1st-degree connections behind each job's
+# "N connections work here" link, with people-search fallback.
 # ---------------------------------------------------------------------------
 
 
@@ -71,7 +76,187 @@ def _company_relevant(headline: str, company: str) -> bool:
         return False
     return c in h or all(word in h for word in c.split())
 
-def _resolve_connections_for_company(driver, company: str, max_pages: int = 2) -> list[dict]:
+
+_LOCALE_SEGMENTS = {
+    "en", "es", "de", "fr", "it", "ja", "ko", "pt", "zh", "ar", "hi", "in",
+    "nl", "pl", "ru", "tr", "th", "vi", "id", "ms", "fil", "sv", "no", "da",
+    "fi", "el", "ro", "hu", "cs", "uk", "he", "fa", "bg", "sr", "sk", "hr",
+}
+
+
+def _normalize_profile_url(url):
+    """Return a LinkedIn profile URL that renders the full profile.
+
+    LinkedIn serves a degraded activity-feed view (no owner Message/Connect
+    action row) for locale-prefixed profile URLs such as ``.../in/user/en/`` in
+    some sessions, while the plain ``.../in/user/`` form renders the full
+    profile. Strip the query string, any trailing locale segment, and make sure
+    the result is an absolute ``www.linkedin.com`` URL.
+    """
+    if not url:
+        return url
+    url = url.split("?")[0].split("#")[0].rstrip("/")
+    if "/in/" in url:
+        parts = url.split("/")
+        # https: / "" / www.linkedin.com / in / <username> [ / <locale> ]
+        if (
+            len(parts) == 6
+            and len(parts[-1]) == 2
+            and parts[-1].isalpha()
+            and parts[-1].lower() in _LOCALE_SEGMENTS
+        ):
+            parts = parts[:-1]
+            url = "/".join(parts)
+    if not url.startswith("http"):
+        url = "https://www.linkedin.com" + url
+    return url
+
+
+def _parse_people_cards(cards) -> list[dict]:
+    """Parse LinkedIn people-search result cards into connection dicts.
+
+    Returns a list of {name, profile_url, headline, degree}. 'degree' is the
+    detected connection badge ("1st"/"2nd"/"3rd") parsed from the card text, or
+    "unknown". Cards without a name-only /in/ link are skipped.
+    """
+    connections = []
+    seen_urls = set()
+
+    for card in cards:
+        try:
+            card_text = card.text
+            lines = [l.strip() for l in card_text.split("\n") if l.strip()]
+            if not lines:
+                continue
+
+            degree = "unknown"
+            for token in card_text.split():
+                t = token.strip("\u2022")
+                if t in ("1st", "2nd", "3rd"):
+                    degree = t
+                    break
+
+            # The primary person's name is the first non-empty line of the card.
+            # Their name-only anchor is the /in/ link whose text is exactly the
+            # (badge-stripped) name; mutual-connection links have longer text.
+            primary_name_text = lines[0].replace(" \u2022 1st", "").strip()
+
+            name_links = card.find_elements(By.CSS_SELECTOR, "a[href*='/in/']")
+            if not name_links:
+                continue
+
+            name_link = None
+            for ln in name_links:
+                t = ln.text.strip().replace("\u2022", "").replace("1st", "").replace("2nd", "").replace("3rd", "").strip()
+                if t == primary_name_text:
+                    name_link = ln
+                    break
+            if name_link is None:
+                name_link = name_links[0]
+
+            profile_url = _normalize_profile_url(name_link.get_attribute("href"))
+            name_text = primary_name_text
+
+            if not name_text or profile_url in seen_urls:
+                continue
+            seen_urls.add(profile_url)
+
+            # Extract headline from card text (immediately after the degree badge)
+            headline = ""
+            try:
+                for idx, line in enumerate(lines):
+                    if name_text in line and idx + 1 < len(lines):
+                        next_idx = idx + 1
+                        while next_idx < len(lines) and (
+                            lines[next_idx] in ("1st", "2nd", "3rd")
+                            or lines[next_idx].replace("\u2022", "").strip() in ("1st", "2nd", "3rd")
+                        ):
+                            next_idx += 1
+                        if next_idx < len(lines):
+                            headline = lines[next_idx]
+                        break
+            except Exception:
+                pass
+
+            connections.append({
+                "name": name_text,
+                "profile_url": profile_url,
+                "headline": headline,
+                "degree": degree,
+            })
+        except Exception:
+            continue
+
+    return connections
+
+
+def _extract_job_connections(driver, job_url: str) -> list[dict]:
+    """
+    Read the real 1st-degree connections behind a job page's 'N connections
+    work here' link. LinkedIn builds that people-search URL server-side with the
+    correct network filter, so every result is an actual connection of the
+    logged-in account (no Premium needed, unlike reading the badge names
+    directly). Returns [] when the job page has no such link.
+    """
+    if not job_url:
+        return []
+
+    try:
+        driver.get(job_url)
+        sleep(randint(25, 40) * 0.1)
+    except Exception as e:
+        print_lg(f"  Failed to load job page for connections: {e}")
+        return []
+
+    if "login" in driver.current_url or "authwall" in driver.current_url:
+        return []
+
+    # Give the badge ("N connections work here") up to 10s to render; it can lag
+    # the rest of the page.
+    try:
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located(
+                (By.XPATH, "//a[contains(., 'connection') and contains(., 'work here')]")
+            )
+        )
+    except Exception:
+        pass
+
+    try:
+        link = driver.find_element(
+            By.XPATH,
+            "//a[contains(., 'connection') and contains(., 'work here')]"
+        )
+        href = link.get_attribute("href")
+    except Exception:
+        print_lg("  No 'connections work here' link on job page.")
+        return []
+
+    if not href or "login" in href:
+        return []
+
+    print_lg(f"  Opening connections link: {href}")
+    try:
+        driver.get(href)
+        sleep(randint(25, 40) * 0.1)
+    except Exception as e:
+        print_lg(f"  Failed to open connections link: {e}")
+        return []
+
+    if "login" in driver.current_url or "authwall" in driver.current_url:
+        return []
+
+    cards = driver.find_elements(By.CSS_SELECTOR, '[role="listitem"]')
+    if not cards:
+        cards = driver.find_elements(By.CSS_SELECTOR, "li.reusable-search__result-container")
+
+    connections = _parse_people_cards(cards)
+    first = connections[0]["name"] if connections else "none"
+    print_lg(f"  Extracted {len(connections)} connection(s) from job page ({first!r})")
+    return connections
+
+
+def _resolve_connections_for_company(driver, company: str, max_pages: int = 2, first_degree_only: bool = True) -> list[dict]:
     """
     Search LinkedIn people results filtered to YOUR 1st-degree connections.
     Returns a list of {name, profile_url, headline} dicts.
@@ -106,69 +291,13 @@ def _resolve_connections_for_company(driver, company: str, max_pages: int = 2) -
         if not cards:
             break
 
-        for card in cards:
-            try:
-                card_text = card.text
-                lines = [l.strip() for l in card_text.split("\n") if l.strip()]
-                if not lines:
-                    continue
-
-                # The primary person's name is the first non-empty line of the card.
-                # Their name-only anchor (link[1]) is the shortest /in/ link whose
-                # text is exactly the name. Mutual-connection links have longer/other text.
-                primary_name_text = lines[0].replace(" \u2022 1st", "").strip()
-
-                name_links = card.find_elements(By.CSS_SELECTOR, "a[href*='/in/']")
-                if not name_links:
-                    continue
-
-                # Find the name-only link (shortest text that is just the name)
-                name_link = None
-                for ln in name_links:
-                    t = ln.text.strip().replace("\u2022", "").replace("1st", "").replace("2nd", "").replace("3rd", "").strip()
-                    if t == primary_name_text:
-                        name_link = ln
-                        break
-                if name_link is None:
-                    # Fallback: use the first /in/ link then
-                    name_link = name_links[0]
-
-                profile_url = name_link.get_attribute("href").split("?")[0]
-                name_text = primary_name_text
-
-                if not name_text or profile_url in seen_urls:
-                    continue
-                seen_urls.add(profile_url)
-
-                # Extract headline from card text
-                headline = ""
-                try:
-                    card_text = card.text
-                    lines = [l.strip() for l in card_text.split("\n") if l.strip()]
-                    # Find the name's index in lines
-                    for idx, line in enumerate(lines):
-                        if name_text in line and idx + 1 < len(lines):
-                            # Next lines may be: degree badge (1st/2nd/3rd) then headline
-                            next_idx = idx + 1
-                            while next_idx < len(lines) and (
-                                lines[next_idx] in ("1st", "2nd", "3rd")
-                                or lines[next_idx].replace("\u2022", "").strip() in ("1st", "2nd", "3rd")
-                            ):
-                                next_idx += 1
-                            if next_idx < len(lines):
-                                headline = lines[next_idx]
-                            break
-                except Exception:
-                    pass
-
-                connections.append({
-                    "name": name_text,
-                    "profile_url": profile_url,
-                    "headline": headline,
-                    "relevant": _company_relevant(headline, company),
-                })
-            except Exception:
+        for conn in _parse_people_cards(cards):
+            if conn["profile_url"] in seen_urls:
                 continue
+            seen_urls.add(conn["profile_url"])
+            if first_degree_only and conn.get("degree") not in ("1st",):
+                continue
+            connections.append(conn)
 
         # Try next page
         if page < max_pages - 1:
@@ -183,23 +312,30 @@ def _resolve_connections_for_company(driver, company: str, max_pages: int = 2) -
             except Exception:
                 break
 
+    for conn in connections:
+        conn["relevant"] = _company_relevant(conn.get("headline", ""), company)
+
     # Order company-matched connections first so the most likely valid recipient
     # for the job is messaged before any fallback candidates.
-    relevant = [c for c in connections if c.get("relevant")]
-    fallback = [c for c in connections if not c.get("relevant")]
-    ordered = relevant + fallback
+    ordered = [c for c in connections if c.get("relevant")] + [c for c in connections if not c.get("relevant")]
     print_lg(
-        f"  Found {len(connections)} connection(s) at {company} "
-        f"({len(relevant)} company-matched)"
+        f"  Found {len(ordered)} first-degree connection(s) for {company} "
+        f"({sum(1 for c in ordered if c.get('relevant'))} company-matched)"
     )
     return ordered
 
 
 def resolve_all_connections(driver, referral_results: list[dict]) -> list[dict]:
     """
-    For each unique company in referral results, resolve actual connection names
-    via LinkedIn people search. Returns a flat list of enriched job dicts,
-    one per (job, connection) pair with 'hr_name' and 'hr_link' filled in.
+    Resolve the real 1st-degree connections behind each referral job's
+    'N connections work here' link (LinkedIn builds that people-search URL with
+    the correct network filter server-side, so every result is a genuine
+    connection). Falls back to a company-keyword people search that keeps only
+    verified 1st-degree cards when a job page has no such link.
+
+    Returns a flat list of enriched job dicts, one per (job, connection) pair
+    with 'hr_name' and 'hr_link' filled in. Only 1st-degree contacts are kept so
+    every target offers a Message (or connect-with-note) route.
     """
     # Deduplicate companies
     company_map = {}
@@ -212,7 +348,11 @@ def resolve_all_connections(driver, referral_results: list[dict]) -> list[dict]:
 
     for company, sample_job in company_map.items():
         print_lg(f"\nResolving connections at {company}...")
-        connections = _resolve_connections_for_company(driver, company, max_pages=1)
+        connections = _extract_job_connections(driver, sample_job.get("link", ""))
+
+        if not connections:
+            print_lg(f"  Falling back to people search for {company}...")
+            connections = _resolve_connections_for_company(driver, company, max_pages=1)
 
         if not connections:
             # Still include the job with "Unknown" HR so it shows in results
@@ -223,7 +363,7 @@ def resolve_all_connections(driver, referral_results: list[dict]) -> list[dict]:
             all_targets.append(target)
             continue
 
-        for conn in connections[:2]:  # Max 2 connections per company to keep it manageable
+        for conn in connections[:3]:  # Max 3 connections per company to keep it manageable
             target = dict(sample_job)
             target["hr_name"] = conn["name"]
             target["hr_link"] = conn["profile_url"]
@@ -256,6 +396,7 @@ def _try_extract_email(driver, profile_url: str) -> str | None:
     """Visit a LinkedIn profile and try to extract an email from Contact Info."""
     if not profile_url:
         return None
+    profile_url = _normalize_profile_url(profile_url)
     try:
         original_url = driver.current_url
         driver.get(profile_url)
@@ -357,12 +498,14 @@ def _extract_email_from_about(driver, profile_url: str, original_url: str) -> st
 
 
 def _send_linkedin_dm(driver, hr_link: str, message: str) -> tuple[bool, str]:
-    """Navigate to profile, click Message, handle shadow DOM, type + send.
-    Returns (success: bool, reason: str).
+    """Navigate to profile, open the messaging compose for the owner, handle
+    shadow DOM, type + send. Returns (success: bool, reason: str).
     """
     if not hr_link:
         print_lg("No LinkedIn profile link for this contact. Skipping LinkedIn DM.")
         return False, "No profile link"
+
+    hr_link = _normalize_profile_url(hr_link)
 
     try:
         original_url = driver.current_url
@@ -370,20 +513,38 @@ def _send_linkedin_dm(driver, hr_link: str, message: str) -> tuple[bool, str]:
         sleep(randint(25, 45) * 0.1)
         print_lg(f"[DM] Loading profile: {hr_link}")
 
-        # Click the "Message" button on the profile
-        try:
-            msg_btn = WebDriverWait(driver, 8).until(
-                EC.element_to_be_clickable(
-                    (By.XPATH, "//button[contains(@aria-label, 'Message')]")
+        # Preferred route (2025+ UI): the owner action row exposes "Message" as an
+        # anchor to /messaging/compose/?profileUrn=...&recipient=... — a native
+        # composer. Navigate straight to it.
+        compose_url = driver.execute_script("""
+            const main = document.querySelector('#main-content, main') || document;
+            for (const el of main.querySelectorAll('a[href*="/messaging/compose/"]')) {
+                if ((el.textContent || '').trim() === 'Message') {
+                    const href = el.getAttribute('href');
+                    if (href) return 'https://www.linkedin.com' + href;
+                }
+            }
+            return '';
+        """)
+        if compose_url:
+            print_lg(f"[DM] Using native compose URL")
+            driver.get(compose_url)
+            sleep(randint(25, 40) * 0.1)
+        else:
+            # Older UI fallback: click the "Message" button -> overlay composer.
+            try:
+                msg_btn = WebDriverWait(driver, 8).until(
+                    EC.element_to_be_clickable(
+                        (By.XPATH, "//button[contains(@aria-label, 'Message')]")
+                    )
                 )
-            )
-            msg_btn.click()
-            sleep(2)
-            print_lg("[DM] Clicked Message button")
-        except Exception:
-            print_lg("Could not find or click the Message button on this profile.")
-            driver.get(original_url)
-            return False, "No Message button"
+                msg_btn.click()
+                sleep(2)
+                print_lg("[DM] Clicked Message button")
+            except Exception:
+                print_lg("Could not find or click the Message button on this profile.")
+                driver.get(original_url)
+                return False, "No Message button"
 
         # Find the message editor — try shadow DOM first (LinkedIn 2025+), then light DOM
         editor = driver.execute_script("""
@@ -401,25 +562,29 @@ def _send_linkedin_dm(driver, hr_link: str, message: str) -> tuple[bool, str]:
             driver.get(original_url)
             return False, "No message editor found"
 
-        # Type the message
+        # Type the message. Prefer real keystrokes (trusted input events) so
+        # LinkedIn's React editor registers the draft; fall back to JS injection
+        # only if the keys did not land.
         editor.click()
         sleep(0.3)
         editor.send_keys(Keys.BACKSPACE)
         sleep(0.2)
-
-        # Use JS for more reliable text insertion into contenteditable div
-        driver.execute_script(
-            "arguments[0].innerText = arguments[1];",
-            editor, message
-        )
-        sleep(0.5)
-
-        # Trigger input event so LinkedIn registers the text
-        driver.execute_script("""
-            arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
-            arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
-        """, editor)
+        editor.send_keys(message)
         sleep(1)
+        typed = driver.execute_script(
+            "return (arguments[0].innerText || '').length;", editor
+        )
+        print_lg(f"[DM] Draft length after keystrokes: {typed}")
+        if not typed:
+            driver.execute_script(
+                "arguments[0].innerText = arguments[1];", editor, message
+            )
+            driver.execute_script("""
+                arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
+                arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
+            """, editor)
+            sleep(1)
+            print_lg("[DM] Injected draft via JS fallback")
 
         # Find and click the Send button — also try shadow DOM first
         send_btn = driver.execute_script("""
@@ -437,13 +602,18 @@ def _send_linkedin_dm(driver, hr_link: str, message: str) -> tuple[bool, str]:
             driver.get(original_url)
             return False, "No Send button"
 
-        # Check if button is disabled
-        is_disabled = driver.execute_script(
-            "return arguments[0].disabled || arguments[0].getAttribute('aria-disabled') === 'true';",
-            send_btn
-        )
+        # Check if button is disabled — wait briefly for it to enable, since
+        # LinkedIn registers the typed text asynchronously after the input event.
+        for _ in range(8):
+            is_disabled = driver.execute_script(
+                "return arguments[0].disabled || arguments[0].getAttribute('aria-disabled') === 'true';",
+                send_btn
+            )
+            if not is_disabled:
+                break
+            sleep(1)
         if is_disabled:
-            print_lg("Send button is disabled — message may not have registered.")
+            print_lg("Send button stayed disabled — message may not have registered.")
             driver.get(original_url)
             return False, "Send button disabled"
 
@@ -484,24 +654,86 @@ def _profile_action(driver) -> str:
     (already a 1st-degree connection), 'pending' (request already sent),
     'following' (only a Follow button), or '' (none detected)."""
     try:
-        return driver.execute_script("""
-            const sels = [
-                ['connect',   'button[aria-label*="Connect"]'],
-                ['message',   'button[aria-label*="Message"]'],
-                ['pending',   'button[aria-label*="Pending"]'],
-                ['following', 'button[aria-label*="Follow"]'],
-            ];
-            for (const [key, sel] of sels) {
-                const el = document.querySelector(sel);
-                if (el) {
-                    const label = (el.getAttribute('aria-label') || '') + ' ' + (el.textContent || '');
-                    // Ignore a "Following" count/lock variants that only mention Connect sideways
-                    if (key === 'connect' && /follow|pending|requested|message/i.test(label)) continue;
-                    return key;
-                }
+        # Wait for the profile to actually render before probing the button row.
+        try:
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "main, .pv-top-card, section.scaffold-layout"))
+            )
+        except Exception:
+            pass
+        sleep(1)
+
+        result = driver.execute_script("""
+            // Prefer the profile's own action row: scope to the main column so a
+            // sidebar "Follow <stranger>" / "Message <stranger>" element is never
+            // mistaken for the owner's action. Fall back to the whole document
+            // when main contains no interactable actions.
+            const main = document.querySelector('#main-content, main') || document;
+            const container = (main.querySelectorAll('button, a[href*="/messaging/compose/"]').length > 0) ? main : document;
+            // Owner "Message" action (2025+ UI): an anchor to /messaging/compose/
+            // whose visible label is exactly "Message" — sidebar ones read
+            // "Message <full name>".
+            for (const el of container.querySelectorAll('a[href*="/messaging/compose/"]')) {
+                if ((el.textContent || '').trim() === 'Message') return 'message';
+            }
+            for (const el of container.querySelectorAll('button[aria-label*="Message"]')) {
+                const label = (el.getAttribute('aria-label') || '') + ' ' + (el.textContent || '');
+                if (/Message/i.test(label)) return 'message';
+            }
+            for (const el of container.querySelectorAll('button[aria-label*="Connect"]')) {
+                const label = (el.getAttribute('aria-label') || '') + ' ' + (el.textContent || '');
+                if (/follow|pending|requested|message|invite/i.test(label)) continue;
+                return 'connect';
+            }
+            for (const el of container.querySelectorAll('button[aria-label*="Pending"]')) {
+                const label = (el.getAttribute('aria-label') || '') + ' ' + (el.textContent || '');
+                if (/message|connect/i.test(label)) continue;
+                return 'pending';
+            }
+            for (const el of container.querySelectorAll('button[aria-label*="Follow"]')) {
+                const label = (el.getAttribute('aria-label') || '') + ' ' + (el.textContent || '');
+                if (/Message/i.test(label)) continue;
+                return 'following';
             }
             return '';
         """)
+        if result in ("message", "connect", "pending"):
+            return result
+
+        # Some profiles hide "Connect" behind the More dropdown (button with
+        # aria-label "More" / "More actions"). Open it and scan the menu while
+        # it is visible. Close it again afterwards so the page is left tidy.
+        found = driver.execute_script("""
+            const open = () => {
+                const btn = document.querySelector('button[aria-label*="More"]:not([aria-label*="following"])');
+                if (btn) { btn.click(); return true; }
+                return false;
+            };
+            if (!open()) return '';
+            return 'opened';
+        """)
+        if found:
+            sleep(1.5)
+            menu_result = driver.execute_script("""
+                const btns = [...document.querySelectorAll('div[role="menu"] button, li[role="presentation"] button, div[aria-label*="menu"] button, button')];
+                const text = (n) => (n.getAttribute('aria-label') || '') + ' ' + (n.textContent || '');
+                const has = (re) => btns.some(n => re.test(text(n)));
+                if (has(/message/i)) return 'message';
+                if (has(/^\\s*connect\\s*$/i) || has(/connect with/i)) return 'connect';
+                if (has(/pending/i)) return 'pending';
+                if (has(/follow/i) && !has(/following/i)) return 'following';
+                return '';
+            """)
+            if menu_result:
+                return menu_result
+            # Close the dropdown so a lingering menu never intercepts later clicks
+            try:
+                driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+            except Exception:
+                pass
+            return result or ""
+        return result or ""
+
     except Exception:
         return ""
 
@@ -512,6 +744,7 @@ def _dry_probe_profile_action(driver, hr_link: str) -> str:
     anything and without sending."""
     if not hr_link:
         return ""
+    hr_link = _normalize_profile_url(hr_link)
     try:
         original_url = driver.current_url
         driver.get(hr_link)
@@ -523,12 +756,59 @@ def _dry_probe_profile_action(driver, hr_link: str) -> str:
         return ""
 
 
+def _click_connect(driver) -> bool:
+    """Click a profile's Connect button — either the direct top button or the
+    'Connect' item inside the More dropdown (used when LinkedIn only exposes
+    Connect under the actions menu). Returns True if a Connect click landed."""
+    direct = driver.execute_script("""
+        const els = document.querySelectorAll('button[aria-label*="Connect"]');
+        for (const el of els) {
+            const label = (el.getAttribute('aria-label') || '') + ' ' + (el.textContent || '');
+            if (/follow|pending|requested|message|invite/i.test(label)) continue;
+            el.click(); return true;
+        }
+        return false;
+    """)
+    if direct:
+        return True
+
+    # No top-level Connect: open the More dropdown and click its Connect item.
+    opened = driver.execute_script("""
+        const btn = document.querySelector('button[aria-label*="More"]:not([aria-label*="following"])');
+        if (btn) { btn.click(); return true; }
+        return false;
+    """)
+    if not opened:
+        return False
+    sleep(1.5)
+    clicked = driver.execute_script("""
+        if (window.__ajaMoreOpened) return false;
+        const btns = [...document.querySelectorAll('div[role="menu"] button, button')];
+        for (const el of btns) {
+            const label = (el.getAttribute('aria-label') || '') + ' ' + (el.textContent || '');
+            if (/^\\s*connect\\s*$/i.test(label) || /connect with/i.test(label)) {
+                el.click(); return true;
+            }
+        }
+        return false;
+    """)
+    if clicked:
+        return True
+    try:
+        driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+    except Exception:
+        pass
+    return False
+
+
 def _send_linkedin_connect_request(driver, hr_link: str, note: str) -> tuple[bool, str]:
     """Send a LinkedIn connection request with a personal note (no DM possible
     for non-connections on a free account). Assumes the profile is NOT already
     connected. Returns (success: bool, reason: str)."""
     if not hr_link:
         return False, "No profile link"
+
+    hr_link = _normalize_profile_url(hr_link)
 
     # LinkedIn personal notes are capped at 300 characters.
     note = (note or "").strip()[:300]
@@ -551,22 +831,12 @@ def _send_linkedin_connect_request(driver, hr_link: str, note: str) -> tuple[boo
             driver.get(original_url)
             return False, reason
 
-        # Find and click the Connect button
-        btn = driver.execute_script("""
-            const els = document.querySelectorAll('button[aria-label*="Connect"]');
-            for (const el of els) {
-                const label = (el.getAttribute('aria-label') || '') + ' ' + (el.textContent || '');
-                if (/follow|pending|requested|message/i.test(label)) continue;
-                return el;
-            }
-            return null;
-        """)
-        if not btn:
+        # Find and click the Connect button (direct or via the More dropdown)
+        if not _click_connect(driver):
             print_lg("[CONNECT] Could not find the Connect button.")
             driver.get(original_url)
             return False, "No Connect button"
 
-        btn.click()
         sleep(2)
         print_lg("[CONNECT] Clicked Connect (dialog opened)")
 
@@ -642,12 +912,26 @@ def _send_linkedin_message_or_connect(driver, hr_link: str, message: str, note: 
     if not hr_link:
         return False, "No profile link"
 
+    hr_link = _normalize_profile_url(hr_link)
+
     try:
         original_url = driver.current_url
         driver.get(hr_link)
         sleep(randint(25, 45) * 0.1)
 
         action = _profile_action(driver)
+        if action not in ("message", "connect", "pending"):
+            # LinkedIn can serve the locale-prefixed (/en/) profile in a
+            # degraded activity-feed form that hides the owner action row.
+            # Fall back to the plain profile URL once before giving up.
+            plain = _normalize_profile_url(hr_link)
+            if plain != hr_link:
+                print_lg(f"[ROUTE] Retrying on plain profile URL: {plain}")
+                driver.get(plain)
+                sleep(randint(20, 35) * 0.1)
+                action = _profile_action(driver)
+                if action in ("message", "connect", "pending"):
+                    hr_link = plain
         if action == "message":
             driver.get(original_url)
             print_lg("[ROUTE] Already connected — sending DM.")
@@ -784,6 +1068,11 @@ def send_referral_messages(driver, results: list[dict] = None) -> dict:
     log_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "referral_message_log.csv")
     stats = {"linkedin_sent": 0, "linkedin_failed": 0, "gmail_sent": 0, "gmail_failed": 0, "skipped": 0}
     dry = is_dry_run()
+
+    def _stop_after_first_send():
+        """Halts the loop at the first successful message when
+        AJA_STOP_AFTER_FIRST_SEND is set (live runs stop at one confirmed send)."""
+        return bool(os.environ.get("AJA_STOP_AFTER_FIRST_SEND")) and (stats["linkedin_sent"] + stats["gmail_sent"]) >= 1
     if dry:
         print_lg("\n[DRY RUN] Referral messaging rehearsal - connections will be resolved but NO messages will be sent.")
 
@@ -826,6 +1115,12 @@ def send_referral_messages(driver, results: list[dict] = None) -> dict:
     linkedin_count = 0
     gmail_count = 0
 
+    # "One job = one referral": a single job may resolve to several HR contacts,
+    # but we only ever send ONE referral per job posting. This set tracks jobs
+    # that already have a confirmed referral so a duplicate contact for the same
+    # job in this run is skipped.
+    run_sent_job_ids = set()
+
     for i, job in enumerate(actionable):
         from datetime import datetime
         job["timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -833,7 +1128,22 @@ def send_referral_messages(driver, results: list[dict] = None) -> dict:
         hr_name = job.get("hr_name", "there")
         title = job.get("title", "the role")
         company = job.get("company", "the company")
+        job_id = job.get("job_id", "")
+
+        # One job, one referral: skip this posting if it was already messaged in
+        # a previous run (persisted) or earlier in this run.
+        job_key = str(job_id or "").strip()
+        if not job_key:
+            # No job id (rare) — fall back to the HR profile URL.
+            job_key = str(job.get("hr_link") or "").strip()
+        if job_key and (job_key in run_sent_job_ids or referral_sent_for_job(job_key)):
+            print_lg(f"\n[{i+1}/{len(actionable)}] {hr_name} — {title} at {company} (SKIPPED: referral already sent for this job)")
+            stats["skipped"] += 1
+            events.emit("REFERRAL_SKIPPED_JOB_ALREADY_SENT", job_id=job_id, hr=hr_name, company=company, title=title)
+            continue
+
         print_lg(f"\n[{i+1}/{len(actionable)}] {hr_name} — {title} at {company}")
+        events.emit("REFERRAL_SEND_ATTEMPTED", hr=hr_name, company=company, title=title, job_id=job_id)
 
         if dry:
             message = _compose_message(linkedin_dm_template, job)
@@ -887,11 +1197,19 @@ def send_referral_messages(driver, results: list[dict] = None) -> dict:
                 stats["linkedin_sent"] += 1
                 linkedin_count += 1
                 record_referral_message()
+                record_referral_job_sent(job_key, job)
+                if job_key:
+                    run_sent_job_ids.add(job_key)
                 _log_message_result(log_path, job, "LinkedIn", True)
+                events.emit("REFERRAL_SEND_SUCCESS", channel="linkedin", hr=hr_name, company=company, job_id=job.get("job_id", ""))
+                if _stop_after_first_send():
+                    print_lg("Stopping after first successful send (AJA_STOP_AFTER_FIRST_SEND).")
+                    break
             else:
                 stats["linkedin_failed"] += 1
                 reason = success[1] if isinstance(success, tuple) else ""
                 _log_message_result(log_path, job, "LinkedIn", False, reason)
+                events.emit("REFERRAL_SEND_FAILED", channel="linkedin", hr=hr_name, company=company, reason=str(reason)[:200], job_id=job.get("job_id", ""))
 
             if linkedin_count < referral_dm_max and i < len(actionable) - 1:
                 delay = randint(int(referral_dm_delay * 0.8), int(referral_dm_delay * 1.2))
@@ -922,12 +1240,21 @@ def send_referral_messages(driver, results: list[dict] = None) -> dict:
                     stats["gmail_sent"] += 1
                     gmail_count += 1
                     record_referral_message()
+                    record_referral_job_sent(job_key, job)
+                    if job_key:
+                        run_sent_job_ids.add(job_key)
+                    events.emit("REFERRAL_SEND_SUCCESS", channel="gmail", hr=hr_name, company=company, email=email, job_id=job.get("job_id", ""))
+                    if _stop_after_first_send():
+                        print_lg("Stopping after first successful send (AJA_STOP_AFTER_FIRST_SEND).")
+                        break
                 else:
                     stats["gmail_failed"] += 1
+                    events.emit("REFERRAL_SEND_FAILED", channel="gmail", hr=hr_name, company=company, reason="gmail-send-failed", job_id=job.get("job_id", ""))
                 _log_message_result(log_path, job, "Gmail", success)
             else:
                 print_lg("No email found for this contact. Skipping Gmail.")
                 _log_message_result(log_path, job, "Gmail", False, "No email found")
+                events.emit("REFERRAL_SEND_FAILED", channel="gmail", hr=hr_name, company=company, reason="no-email-found", job_id=job.get("job_id", ""))
 
             if gmail_count < referral_dm_max and i < len(actionable) - 1:
                 delay = randint(int(referral_dm_delay * 0.8), int(referral_dm_delay * 1.2))
@@ -939,6 +1266,18 @@ def send_referral_messages(driver, results: list[dict] = None) -> dict:
             print_lg(f"\nReached max messages per channel ({referral_dm_max}). Stopping.")
             break
 
+    # "At least N referrals" reporting. Referrals are counted by distinct job
+    # (one job = one referral). We report this run's new distinct jobs messaged,
+    # the running total across all runs (from the persisted log), and any
+    # shortfall against the target so you know to re-run / add targets.
+    new_distinct = len(run_sent_job_ids)
+    try:
+        from modules.license import referral_jobs_sent_total
+        lifetime_total = referral_jobs_sent_total()
+    except Exception:
+        lifetime_total = new_distinct
+    shortfall = max(0, referral_target_count - lifetime_total)
+
     print_lg(f"\n{'='*60}")
     print_lg(f"REFERRAL MESSAGING COMPLETE")
     print_lg(f"{'='*60}")
@@ -947,6 +1286,12 @@ def send_referral_messages(driver, results: list[dict] = None) -> dict:
     print_lg(f"Gmails sent: {stats['gmail_sent']}")
     print_lg(f"Gmails failed: {stats['gmail_failed']}")
     print_lg(f"Skipped (no HR info): {stats['skipped']}")
+    print_lg(f"Distinct jobs messaged this run: {new_distinct}")
+    print_lg(f"Distinct jobs messaged (all-time): {lifetime_total}")
+    if shortfall:
+        print_lg(f"Target: {referral_target_count} referrals - {shortfall} short. Re-run the referral send (or add more targets) to close the gap.")
+    else:
+        print_lg(f"Target: {referral_target_count} referrals - met. All {referral_target_count} referral slots reached.")
     print_lg(f"Log saved to: {log_path}")
     print_lg(f"{'='*60}\n")
 
