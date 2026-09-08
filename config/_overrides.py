@@ -52,6 +52,30 @@ def load_user_config() -> dict:
         return {}
 
 
+def candidate_experience_years() -> float | None:
+    '''
+    The candidate's real experience, in years, from the persisted Resume Profile
+    (user_config.json -> resume_profiles). Falls back to None when no profile has
+    a parsed "years" value.
+
+    This is the source of truth for the experience gate. `search.current_experience`
+    is a coarse config fallback and is NOT the candidate's actual experience.
+    '''
+    data = load_user_config()
+    profiles = data.get("resume_profiles", {})
+    if not isinstance(profiles, dict):
+        return None
+    best: float | None = None
+    for _path, info in profiles.items():
+        if not isinstance(info, dict):
+            continue
+        years = info.get("years")
+        if isinstance(years, (int, float)) and not isinstance(years, bool):
+            if best is None or years > best:
+                best = float(years)
+    return best
+
+
 def apply(module_name: str, module_globals: dict) -> None:
     '''
     Overrides a config module's existing globals with values from the matching

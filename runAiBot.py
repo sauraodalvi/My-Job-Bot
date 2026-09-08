@@ -48,6 +48,8 @@ from modules.open_chrome import *
 from modules.helpers import *
 from modules.clickers_and_finders import *
 from modules.validator import validate_config
+from modules import events
+from config._overrides import candidate_experience_years
 from modules.external_fill import fill_external_form
 from modules import dry_run
 from modules.dry_run import is_dry_run
@@ -129,7 +131,10 @@ failed_count = 0
 skip_count = 0
 dailyEasyApplyLimitReached = False
 
-re_experience = re.compile(r'[(]?\s*(\d+)\s*[)]?\s*[-to]*\s*\d*[+]*\s*year[s]?', re.IGNORECASE)
+re_experience = re.compile(
+    r'[(]?\s*(\d+)\s*[)]?\s*[-to]*\s*\d*[+]*\s*'
+    r'(?:years?|ans|an\b|ann\S*|a[ñn]os|Jahre|Jahr|Jahren|Jahres|anni|anno|年|년)',
+    re.IGNORECASE)
 
 desired_salary_lakhs = str(round(desired_salary / 100000, 2))
 desired_salary_monthly = str(round(desired_salary/12, 2))
@@ -138,6 +143,119 @@ desired_salary = str(desired_salary)
 current_ctc_lakhs = str(round(current_ctc / 100000, 2))
 current_ctc_monthly = str(round(current_ctc/12, 2))
 current_ctc = str(current_ctc)
+
+# Candidate's true experience: the persisted Resume Profile wins; the
+# `search.current_experience` config value is only a fallback (never the truth).
+_profile_years = candidate_experience_years()
+if _profile_years is not None:
+    if current_experience != int(round(_profile_years)):
+        print_lg(
+            f"Using Resume Profile experience ({_profile_years} years) for the experience gate "
+            f"(search.current_experience was {current_experience})."
+        )
+        current_experience = int(round(_profile_years))
+
+
+def _dismiss_page_overlay() -> None:
+    """Dismiss a LinkedIn page-level overlay (not the Easy Apply modal)."""
+    # 1) Escape first: closes the common modal/promo floaters without touching
+    #    any Easy Apply modal (which is never open at this point).
+    try:
+        actions.send_keys(Keys.ESCAPE).perform()
+    except Exception:
+        pass
+    sleep(1)
+    # 2) Click the generic modal backdrop if one is present.
+    try:
+        backdrop = driver.find_element(By.CSS_SELECTOR, "div.artdeco-modal-overlay")
+        if backdrop.is_displayed():
+            driver.execute_script("arguments[0].click();", backdrop)
+    except Exception:
+        pass
+    sleep(1)
+    # 3) Fall back to any Dismiss/Close button.
+    try:
+        dismiss_buttons = driver.find_elements(
+            By.CSS_SELECTOR,
+            "button[aria-label*='Dismiss'], button[aria-label*='Close'], button[aria-label*='close']",
+        )
+        if dismiss_buttons and dismiss_buttons[0].is_displayed():
+            dismiss_buttons[0].click()
+    except Exception:
+        pass
+
+
+def robust_click(
+    element: WebElement,
+    description: str = "element",
+    attempts: int = 5,
+    verify=None,
+    resolver=None,
+    js_fallback: bool = True,
+) -> bool:
+    '''
+    Click with overlay detection/dismiss/retry/verify.
+
+    Attempts the click up to `attempts` times. On a click-intercepted failure it
+    dismisses a page-level overlay and retries (emitting OVERLAY_DETECTED /
+    OVERLAY_DISMISSED events). An optional `verify` expected-conditions predicate
+    confirms the click landed. `resolver`, when given, re-resolves the element on
+    each attempt (elements can go stale after an overlay dismiss or a re-render).
+    When `js_fallback` is enabled, the last attempt uses a direct DOM click via
+    JavaScript, which dispatches straight to the target element and bypasses any
+    overlay that intercepts Selenium's synthesized pointer event.
+    Raises ElementClickInterceptedException only after all attempts are exhausted.
+    '''
+    last_error = None
+    for attempt in range(attempts):
+        try:
+            el = resolver() if resolver is not None else element
+            if not hasattr(el, "click"):
+                raise ElementClickInterceptedException(f"resolver returned non-element {el!r}")
+            try:
+                scroll_to_view(driver, el, True)
+            except Exception as se:
+                last_error = se
+                events.emit("OVERLAY_DETECTED", description=description, attempt=attempt + 1, reason=f"scroll-failed: {str(se)[:120]}")
+            try:
+                el.click()
+                if verify is not None:
+                    try:
+                        WebDriverWait(driver, 8).until(verify)
+                    except Exception as ve:
+                        last_error = ve
+                        events.emit("OVERLAY_DETECTED", description=description, attempt=attempt + 1, reason="click-not-verified")
+                        _dismiss_page_overlay()
+                        sleep(1)
+                        continue
+                return True
+            except ElementClickInterceptedException as e:
+                last_error = e
+                events.emit("OVERLAY_DETECTED", description=description, attempt=attempt + 1)
+                _dismiss_page_overlay()
+                events.emit("OVERLAY_DISMISSED", description=description, attempt=attempt + 1)
+                if js_fallback and attempt >= attempts - 1:
+                    # Final attempt: dispatch the click directly on the DOM node. This
+                    # defeats overlay interception for plain <button> elements.
+                    el = resolver() if resolver is not None else element
+                    try:
+                        try:
+                            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
+                        except Exception:
+                            pass
+                        driver.execute_script("arguments[0].click();", el)
+                        events.emit("APPLY_JS_CLICK", description=description)
+                        return True
+                    except Exception as je:
+                        last_error = je
+                        events.emit("FAILURE", description=description, stage="apply_click_js_fallback", error=str(je)[:200])
+                sleep(1)
+        except NoSuchWindowException:
+            raise
+        except Exception as e:
+            last_error = e
+            sleep(1)
+    raise ElementClickInterceptedException(f"Failed to click {description!r} after {attempts} attempts ({last_error})")
 
 notice_period_months = str(notice_period//30)
 notice_period_weeks = str(notice_period//7)
@@ -603,13 +721,17 @@ def check_blacklist(rejected_jobs: set, job_id: str, company: str, blacklisted_c
 
 
 # Function to extract years of experience required from About Job
-def extract_years_of_experience(text: str) -> int:
-    # Extract all patterns like '10+ years', '5 years', '3-5 years', etc.
+def extract_years_of_experience(text: str) -> int | str:
+    # Extract all patterns like '10+ years', '5 years', '3-5 years',
+    # '5 ans', '3 Jahre', '4 anni', etc.
     matches = re.findall(re_experience, text)
-    if len(matches) == 0: 
+    if len(matches) == 0:
         print_lg(f'\n{text}\n\nCouldn\'t find experience requirement in About the Job!')
-        return 0
-    return max([int(match) for match in matches if int(match) <= 12])
+        return "Unknown"
+    values = [int(match) for match in matches if int(match) <= 12]
+    if not values:
+        return "Unknown"
+    return max(values)
 
 
 
@@ -657,7 +779,7 @@ def get_job_description(
                 print_lg(f'Found the word "master" in \n{jobDescription}')
                 found_masters = 2
             experience_required = extract_years_of_experience(jobDescription)
-            if current_experience > -1 and experience_required > current_experience + found_masters:
+            if current_experience > -1 and isinstance(experience_required, int) and experience_required > current_experience + found_masters:
                 skipMessage = f'\n{jobDescription}\n\nExperience required {experience_required} > Current Experience {current_experience + found_masters}. Skipping this job!\n'
                 skipReason = "Required experience is high"
                 skip = True
@@ -687,14 +809,15 @@ def answer_common_questions(label: str, answer: str) -> str:
 # Function to answer the questions for Easy Apply
 def answer_questions(modal: WebElement, questions_list: set, work_location: str, job_description: str | None = None ) -> set:
     # Get all questions from the page
-     
+
     all_questions = modal.find_elements(By.XPATH, ".//div[@data-test-form-element]")
-    # all_questions = modal.find_elements(By.CLASS_NAME, "jobs-easy-apply-form-element")
-    # all_list_questions = modal.find_elements(By.XPATH, ".//div[@data-test-text-entity-list-form-component]")
-    # all_single_line_questions = modal.find_elements(By.XPATH, ".//div[@data-test-single-line-text-form-component]")
-    # all_questions = all_questions + all_list_questions + all_single_line_questions
+
+    def _track(label_org: str, answer: str, qtype: str, prev_answer) -> None:
+        questions_list.add((label_org, answer, qtype, prev_answer))
+        events.emit("ANSWER_FILLED", qtype=qtype, question=label_org[:160], answer=str(answer)[:120])
 
     for Question in all_questions:
+        events.emit("QUESTION_DETECTED")
         # Check if it's a select Question
         select = try_xp(Question, ".//select", False)
         if select:
@@ -765,7 +888,7 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
                         select.select_by_index(randint(1, len(select.options) - 1))
                         answer = select.first_selected_option.text
                         randomly_answered_questions.add((f'{label_org} [ {options} ]', "select"))
-            questions_list.add((f'{label_org} [ {options} ]', answer, "select", prev_answer))
+            _track(f'{label_org} [ {options} ]', answer, "select", prev_answer)
             continue
         
         # Check if it's a radio Question
@@ -822,7 +945,7 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
                     actions.move_to_element(ele).click().perform()
                     if not foundOption: randomly_answered_questions.add((f'{label_org} ]',"radio"))
             else: answer = prev_answer
-            questions_list.add((label_org+" ]", answer, "radio", prev_answer))
+            _track(label_org+" ]", answer, "radio", prev_answer)
             continue
         
         # Check if it's a text question
@@ -901,7 +1024,7 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
                     sleep(2)
                     actions.send_keys(Keys.ARROW_DOWN)
                     actions.send_keys(Keys.ENTER).perform()
-            questions_list.add((label, text.get_attribute("value"), "text", prev_answer))
+            _track(label, text.get_attribute("value"), "text", prev_answer)
             continue
 
         # Check if it's a textarea question
@@ -933,7 +1056,7 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
                     sleep(2)
                     actions.send_keys(Keys.ARROW_DOWN)
                     actions.send_keys(Keys.ENTER).perform()
-            questions_list.add((label, text_area.get_attribute("value"), "textarea", prev_answer))
+            _track(label, text_area.get_attribute("value"), "textarea", prev_answer)
             continue
 
         # Check if it's a checkbox question
@@ -953,7 +1076,7 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
                 except Exception as e: 
                     print_lg("Checkbox click failed!", e)
                     pass
-            questions_list.add((f'{label} ([X] {answer})', checked, "checkbox", prev_answer))
+            _track(f'{label} ([X] {answer})', checked, "checkbox", prev_answer)
             continue
 
 
@@ -979,6 +1102,7 @@ def external_apply(pagination_element: WebElement, job_id: str, job_link: str, r
     '''
     global tabs_count, dailyEasyApplyLimitReached, external_application_submitted
     external_application_submitted = False
+    events.emit("EXTERNAL_APPLY_STARTED", job_id=job_id, title="", fallback=easy_apply_only and not fill_external_forms)
     if easy_apply_only and not fill_external_forms:
         try:
             if "exceeded the daily application limit" in driver.find_element(By.CLASS_NAME, "artdeco-inline-feedback__message").text: dailyEasyApplyLimitReached = True
@@ -1015,6 +1139,7 @@ def external_apply(pagination_element: WebElement, job_id: str, job_link: str, r
     except Exception as e:
         # print_lg(e)
         print_lg("Failed to apply!")
+        events.emit("FAILURE", job_id=job_id, title="", stage="external_apply", error=str(e)[:300])
         failed_job(job_id, job_link, resume, date_listed, "Probably didn't find Apply button or unable to switch tabs.", e, application_link, screenshot_name)
         global failed_count
         failed_count += 1
@@ -1167,6 +1292,7 @@ def apply_to_jobs(search_terms: list[str]) -> None:
                     job_id,title,company,work_location,work_style,skip = get_job_main_details(job, blacklisted_companies, rejected_jobs)
                     
                     if skip: continue
+                    events.emit("JOB_OPENED", job_id=job_id, title=title, company=company, work_location=work_location)
 
                     # Stop applying once the Free plan daily limit is reached (hard stop + upsell).
                     if not can_submit():
@@ -1197,6 +1323,7 @@ def apply_to_jobs(search_terms: list[str]) -> None:
                         rejected_jobs, blacklisted_companies, jobs_top_card = check_blacklist(rejected_jobs,job_id,company,blacklisted_companies)
                     except ValueError as e:
                         print_lg(e, 'Skipping this job!\n')
+                        events.emit("SKIPPED", job_id=job_id, reason="blacklisted_company")
                         failed_job(job_id, job_link, resume, date_listed, "Found Blacklisted words in About Company", e, "Skipped", screenshot_name)
                         skip_count += 1
                         continue
@@ -1247,8 +1374,13 @@ def apply_to_jobs(search_terms: list[str]) -> None:
 
 
                     description, experience_required, skip, reason, message = get_job_description()
+                    if isinstance(experience_required, int):
+                        events.emit("EXPERIENCE_CHECK", job_id=job_id, required=experience_required, candidate=current_experience)
+                    else:
+                        events.emit("EXPERIENCE_UNKNOWN", job_id=job_id, required=experience_required, decision="pass")
                     if skip:
                         print_lg(message)
+                        events.emit("SKIPPED", job_id=job_id, reason=reason or "experience_gate")
                         failed_job(job_id, job_link, resume, date_listed, reason, message, "Skipped", screenshot_name)
                         rejected_jobs.add(job_id)
                         skip_count += 1
@@ -1268,14 +1400,20 @@ def apply_to_jobs(search_terms: list[str]) -> None:
                     # Click the apply button; a brand-new browser tab means external application,
                     # while an Easy Apply modal means a job we can automate.
                     is_easy_apply = False
-                    apply_button = try_xp(driver, ".//button[contains(@class,'jobs-apply-button')]")
+                    apply_button = try_xp(driver, ".//button[contains(@class,'jobs-apply-button')]", click=False)
+                    if apply_button:
+                        events.emit("APPLY_BUTTON_FOUND", job_id=job_id, title=title)
+                    else:
+                        events.emit("APPLY_BUTTON_NOT_FOUND", job_id=job_id, title=title)
                     if apply_button:
                         try:
                             tabs_open = len(driver.window_handles)
-                            apply_button.click()
+                            robust_click(apply_button, "Easy Apply button", resolver=lambda: try_xp(driver, ".//button[contains(@class,'jobs-apply-button')]", click=False))
+                            events.emit("APPLY_BUTTON_CLICKED", job_id=job_id, title=title)
                             buffer(click_gap)
                             if len(driver.window_handles) > tabs_open:
                                 # A new tab opened -> external apply. Close it and return to LinkedIn.
+                                events.emit("NEW_TAB_OPENED", job_id=job_id, title=title, outcome="external")
                                 driver.switch_to.window(driver.window_handles[-1])
                                 if close_tabs and driver.current_window_handle != linkedIn_tab:
                                     driver.close()
@@ -1285,8 +1423,10 @@ def apply_to_jobs(search_terms: list[str]) -> None:
                                 try:
                                     WebDriverWait(driver, 8).until(EC.presence_of_element_located((By.CLASS_NAME, "jobs-easy-apply-modal")))
                                     is_easy_apply = True
+                                    events.emit("EASY_APPLY_MODAL_DETECTED", job_id=job_id, title=title)
                                     print_lg("Easy Apply detected from the modal that opened.")
                                 except Exception:
+                                    events.emit("EASY_APPLY_MODAL_TIMEOUT", job_id=job_id, title=title)
                                     # No modal appeared; make sure nothing is left overlaying the page.
                                     try: actions.send_keys(Keys.ESCAPE).perform()
                                     except Exception: pass
@@ -1297,21 +1437,25 @@ def apply_to_jobs(search_terms: list[str]) -> None:
                                             dismiss_buttons[0].click()
                                     except Exception:
                                         pass
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            events.emit("FAILURE", job_id=job_id, title=title, stage="apply_click", error=str(e)[:300])
                     if not is_easy_apply:
                         # Check 2: an apply link carrying LinkedIn's in-app apply URL flag.
                         try:
                             in_app_apply = driver.find_element(By.XPATH, ".//a[contains(@href, 'openSDUIApplyFlow=true')]")
                             if in_app_apply:
-                                in_app_apply.click()
+                                events.emit("IN_APP_APPLY_LINK_FOUND", job_id=job_id, title=title)
+                                robust_click(in_app_apply, "in-app apply link", resolver=lambda: driver.find_element(By.XPATH, ".//a[contains(@href, 'openSDUIApplyFlow=true')]"))
+                                events.emit("IN_APP_APPLY_LINK_CLICKED", job_id=job_id, title=title)
                                 buffer(click_gap)
                                 if driver.find_elements(By.CLASS_NAME, "jobs-easy-apply-modal"):
                                     is_easy_apply = True
+                                    events.emit("EASY_APPLY_MODAL_DETECTED", job_id=job_id, title=title, via="in_app_link")
                                     print_lg("Easy Apply detected from the in-app apply URL flag.")
                         except Exception:
                             pass
                     if is_easy_apply:
+                        events.emit("EASY_APPLY_OPENED", job_id=job_id, title=title, company=company)
                         if is_dry_run():
                             dry_done += 1
                             dry_run.count("easy_apply")
@@ -1352,6 +1496,7 @@ def apply_to_jobs(search_terms: list[str]) -> None:
                                     if useNewResume and not uploaded: uploaded, resume = upload_resume(modal, default_resume_path)
                                     try: next_button = modal.find_element(By.XPATH, './/span[normalize-space(.)="Review"]') 
                                     except NoSuchElementException:  next_button = modal.find_element(By.XPATH, './/button[contains(span, "Next")]')
+                                    events.emit("NEXT_CLICKED", job_id=job_id, title=title)
                                     try: next_button.click()
                                     except ElementClickInterceptedException: break    # Happens when it tries to click Next button in About Company photos section
                                     buffer(click_gap)
@@ -1361,7 +1506,9 @@ def apply_to_jobs(search_terms: list[str]) -> None:
                                 if questions_list and errored != "stuck": 
                                     print_lg("Answered the following questions...", questions_list)
                                     print("\n\n" + "\n".join(str(question) for question in questions_list) + "\n\n")
+                                events.emit("REVIEW_REACHED", job_id=job_id, title=title)
                                 wait_span_click(driver, "Review", 1, scrollTop=True)
+                                events.emit("REVIEW_CLICKED", job_id=job_id, title=title)
                                 cur_pause_before_submit = pause_before_submit
                                 if errored != "stuck" and cur_pause_before_submit:
                                     decision = pyautogui.confirm('1. Please verify your information.\n2. If you edited something, please return to this final screen.\n3. DO NOT CLICK "Submit Application".\n\n\n\n\nYou can turn off "Pause before submit" setting in config.py\nTo TEMPORARILY disable pausing, click "Disable Pause"', "Confirm your information",["Disable Pause", "Discard Application", "Submit Application"])
@@ -1369,14 +1516,18 @@ def apply_to_jobs(search_terms: list[str]) -> None:
                                     pause_before_submit = False if "Disable Pause" == decision else True
                                     # try_xp(modal, ".//span[normalize-space(.)='Review']")
                                 if modal: follow_company(modal)
+                                events.emit("SUBMIT_ATTEMPTED", job_id=job_id, title=title, job_link=job_link)
                                 if wait_span_click(driver, "Submit application", 2, scrollTop=True): 
                                     date_applied = datetime.now()
+                                    events.emit("SUBMIT_SUCCESS", job_id=job_id, title=title, job_link=job_link)
                                     if not wait_span_click(driver, "Done", 2): actions.send_keys(Keys.ESCAPE).perform()
                                 elif errored != "stuck" and cur_pause_before_submit and "Yes" in pyautogui.confirm("You submitted the application, didn't you 😒?", "Failed to find Submit Application!", ["Yes", "No"]):
                                     date_applied = datetime.now()
+                                    events.emit("SUBMIT_SUCCESS", job_id=job_id, title=title, job_link=job_link)
                                     wait_span_click(driver, "Done", 2)
                                 else:
                                     print_lg("Since, Submit Application failed, discarding the job application...")
+                                    events.emit("SUBMIT_NOT_FOUND", job_id=job_id, title=title)
                                     # if screenshot_name == "Not Available":  screenshot_name = screenshot(driver, job_id, "Failed to click Submit application")
                                     # else:   screenshot_name = [screenshot_name, screenshot(driver, job_id, "Failed to click Submit application")]
                                     if errored == "nose": raise Exception("Failed to click Submit application 😑")
@@ -1384,6 +1535,7 @@ def apply_to_jobs(search_terms: list[str]) -> None:
 
                         except Exception as e:
                             print_lg("Failed to Easy apply!")
+                            events.emit("FAILURE", job_id=job_id, title=title, stage="easy_apply", error=str(e)[:300])
                             # print_lg(e)
                             critical_error_log("Somewhere in Easy Apply process",e)
                             failed_job(job_id, job_link, resume, date_listed, "Problem in Easy Applying", e, application_link, screenshot_name)
@@ -1525,6 +1677,7 @@ def find_referral_jobs(max_pages: int = 6) -> None:
     print_lg("\n########  REFERRAL FINDER  ########")
     print_lg("Scanning your searches for jobs where you have LinkedIn connections...")
     print_lg("(Only counts are read - connection names are a LinkedIn Premium feature.)")
+    events.emit("REFERRAL_SCAN_STARTED", terms=search_terms, locations=locations)
 
     for term, location in search_runs:
         url = f"https://www.linkedin.com/jobs/search/?keywords={quote(term)}"
@@ -1559,6 +1712,7 @@ def find_referral_jobs(max_pages: int = 6) -> None:
                 seen.add(entry["job_id"])
                 found.append(entry)
                 print_lg(f"  {entry['connection_count']} connection(s) at {entry['company']}: {entry['title']} ({entry['link']})")
+                events.emit("REFERRAL_CANDIDATE", job_id=entry.get("job_id"), company=entry.get("company"), title=entry.get("title"), connections=entry.get("connection_count"))
 
             # Advance to the next page of results.
             pagination_element, current_page = get_page_info()
@@ -1667,6 +1821,9 @@ chatGPT_tab = False
 linkedIn_tab = False
 
 def main() -> None:
+    # Run-level event stream (see modules.events). Each process is a fresh run.
+    events.reset_run_id()
+    events.emit("RUN_STARTED", mode=sys.argv[1:])
     print_lg("Starting Auto Job Applier... Please consider sponsoring the project at https://github.com/sponsors/GodsScion")
     if is_dry_run():
         print_lg("[DRY RUN] Rehearsal mode: exercising real code paths. No application will be submitted and no referral message will be sent.")
@@ -1760,6 +1917,43 @@ def main() -> None:
                     pass
             return
 
+        # Curated personalized-DM mode: message a hand-picked list of people
+        # (referral_targets.json). Profile-scrapes each person and asks the AI
+        # client (when configured) for a hyper-personalized message, falling
+        # back to the programmatic template otherwise.
+        if "--send-personalized" in sys.argv:
+            print_lg("Send-personalized mode detected.")
+            if not can_send_referral():
+                show_referral_upsell("message")
+                return
+            try:
+                from modules.helpers import manual_login_retry
+
+                print_lg("Ensuring an authenticated LinkedIn session before sending personalized messages...")
+                if _real_session_ready(driver):
+                    print_lg("Already signed in - reusing your LinkedIn session.")
+                else:
+                    print_lg("Not signed in yet. Attempting login...")
+                    login_LN()
+                    if not _real_session_ready(driver):
+                        print_lg("Automated login did not produce a usable session. Please log in manually in the browser.")
+                        manual_login_retry(lambda: _real_session_ready(driver), limit=180)
+                print_lg("Authenticated LinkedIn session confirmed.")
+
+                from modules.ai.connections import create_ai_client
+                ai_client = create_ai_client()
+                from modules.referral_personalized import send_personalized_messages
+                send_personalized_messages(driver, client=ai_client)
+            except Exception as e:
+                critical_error_log("In Personalized Referral Messaging", e)
+            finally:
+                try:
+                    if driver:
+                        driver.quit()
+                except Exception:
+                    pass
+            return
+
         # # Login to ChatGPT in a new tab for resume customization
         # if use_resume_generator:
         #     try:
@@ -1803,6 +1997,7 @@ def main() -> None:
         if is_dry_run():
             print_lg(dry_run.summary())
         summary = "Total runs: {}\nJobs Easy Applied: {}\nExternal job links collected: {}\nTotal applied or collected: {}\nFailed jobs: {}\nIrrelevant jobs skipped: {}\n".format(total_runs,easy_applied_count,external_jobs_count,easy_applied_count + external_jobs_count,failed_count,skip_count)
+        events.emit("RUN_COMPLETED", mode=sys.argv[1:], easy=easy_applied_count, external=external_jobs_count, failed=failed_count, skipped=skip_count)
         print_lg(summary)
         print_lg("\n\nTotal runs:                     {}".format(total_runs))
         print_lg("Jobs Easy Applied:              {}".format(easy_applied_count))

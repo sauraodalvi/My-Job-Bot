@@ -83,6 +83,12 @@ def createChromeSession(isRetry: bool = False):
             chrome_major = get_chrome_major_version()
             driver = uc.Chrome(options=options, version_main=chrome_major) if chrome_major else uc.Chrome(options=options)
     else: driver = webdriver.Chrome(options=options) #, service=Service(executable_path="C:\\Program Files\\Google\\Chrome\\chromedriver-win64\\chromedriver.exe"))
+    # Never let a stalled page navigation block the run forever (a single hung
+    # driver.get() once stalled the referral-send loop for ~3 hours).
+    try:
+        driver.set_page_load_timeout(120)
+    except Exception:
+        pass
     driver.maximize_window()
     wait = WebDriverWait(driver, 5)
     actions = ActionChains(driver)
