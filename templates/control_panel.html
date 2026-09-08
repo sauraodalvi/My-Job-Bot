@@ -1391,6 +1391,10 @@ function buildReferralPanel() {
             });
         }
 
+        // New users land on the panel before they've shared anything. Instead of
+        // leaving them facing a wall of settings tabs, we take them straight into
+        // the short 3-step "Let's get you ready" flow. A banner offers a "skip"
+        // escape hatch and once the flow is complete we never redirect again.
         function loadSetupBanner() {
             var host = document.getElementById('setupBanner');
             fetch('/api/setup/flow').then(function (r) { return r.json(); }).then(function (flow) {
@@ -1400,9 +1404,27 @@ function buildReferralPanel() {
                         .map(function (s) { return '<a href="/setup?edit=' + s.id + '" style="color:#1a7f37;font-weight:600;">' + names[s.id] + '</a>'; })
                         .join(' · ');
                     host.innerHTML = 'You\'re all set! Want to change anything? — ' + links;
-                } else {
-                    host.innerHTML = '<a href="/setup" style="color:#1a7f37;font-weight:600;">Let\'s get you ready: quick setup (resume, what you want, ask-before-sending)</a>';
+                    return;
                 }
+                // Setup is incomplete: this is a brand-new (or partially-done) user.
+                // Auto-redirect once per browser session to /setup unless they
+                // explicitly dismissed the prompt with "skip for now".
+                if (sessionStorage.getItem('aja_skip_setup')) {
+                    host.innerHTML = '<a href="/setup" style="color:#1a7f37;font-weight:600;">Let\'s get you ready: quick setup (resume, what you want, ask-before-sending)</a>';
+                    return;
+                }
+                host.innerHTML =
+                    '<span style="color:#1f2733;font-weight:600;">Taking you to the quick setup — just a few questions about your resume and what you want.</span> '
+                    + '<button type="button" id="skipSetupBtn" class="btn secondary" style="margin-left:8px;">Skip and show settings</button>';
+                var skipBtn = document.getElementById('skipSetupBtn');
+                if (skipBtn) {
+                    skipBtn.addEventListener('click', function () {
+                        sessionStorage.setItem('aja_skip_setup', '1');
+                        window.location.href = '/';
+                    });
+                }
+                // Auto-navigate after a short beat so the user sees the message.
+                setTimeout(function () { window.location.href = '/setup'; }, 900);
             }).catch(function () {
                 host.innerHTML = '<a href="/setup" style="color:#1a7f37;font-weight:600;">Let\'s get you ready: quick setup</a>';
             });

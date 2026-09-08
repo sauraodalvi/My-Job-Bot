@@ -75,6 +75,25 @@ pyautogui.FAILSAFE = False
 _hard_skip_companies = None
 
 
+def _app_dir() -> str:
+    '''The folder that holds the project / the bundled app's executable.'''
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def _has_any_setup() -> bool:
+    '''True once the user has saved anything via setup (config file present, or a
+    resume path already set). Used by the first-run guard to tell a truly brand-new
+    user to run setup instead of launching the browser with blanks.'''
+    try:
+        if os.path.exists(os.path.join(_app_dir(), "user_config.json")):
+            return True
+    except OSError:
+        pass
+    return bool(default_resume_path)
+
+
 def _init_hard_skip() -> set:
     '''Build the exact-company-name blocklist set (lowercased names).'''
     global _hard_skip_companies
@@ -1832,6 +1851,27 @@ def main() -> None:
         global linkedIn_tab, tabs_count, useNewResume, aiClient
         alert_title = "Error Occurred. Closing Browser!"
         validate_config()
+
+        # First-run guard (desktop parity with the web "/setup" onboarding): if
+        # there is no saved config at all, running now would only launch the
+        # browser with blank details. Point the user at the one-time setup instead
+        # of letting the run limp along. Dry-run / smoke / review modes are exempt.
+        if not _has_any_setup():
+            mode_args = [a for a in sys.argv[1:] if a.startswith('-')]
+            if not is_dry_run() and not set(mode_args).intersection(
+                    {'--referral', '--send-referrals', '--send-personalized', '--smoke', '--setup'}):
+                print("")
+                print("*" * 70)
+                print("  You haven't finished your one-time setup yet.")
+                print("  The bot needs your resume and preferences before it runs.")
+                print("")
+                print("  On this computer, run the setup first:")
+                print("    - Windows: double-click 'Setup App.bat'  (or run 'python setup_app.py --setup')")
+                print("    - macOS/Linux: run './start.command' and the browser will guide you")
+                print("")
+                print("  Then start the bot again.")
+                print("*" * 70)
+                return
 
         # Licensing status banner
         if is_paid():
