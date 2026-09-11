@@ -2,7 +2,6 @@ import sys
 import os
 import json
 import subprocess
-import datetime
 import tempfile
 
 import tkinter as tk
@@ -826,7 +825,7 @@ def probe_write(out=None):
         username="test@example.com", password="testpass",
         gemini_key="AIza-EXAMPLE-KEY-FOR-PROBE",
         current_city="Pune", years_of_experience="3",
-        resume_path=r"C:\resume\REDACTED.pdf",
+        resume_path=r"C:\resume\My Resume.pdf",
         website="example.com", linkedin_url="https://www.linkedin.com/in/example",
         search_terms="Product Manager\nAI Product Manager",
         locations="Pune\nRemote\nSingapore",
@@ -834,7 +833,7 @@ def probe_write(out=None):
         existing=load_existing_config(),
     )
     cfg = setup_flow.apply_answers(cfg, {
-        "resume": {"resume_path": r"C:\resume\REDACTED.pdf"},
+        "resume": {"resume_path": r"C:\resume\My Resume.pdf"},
         "wants": {"sentence": "AI Product Manager roles in Europe, remote or hybrid, posted this week."},
         "policy": {"ask_before_sending": True},
     })

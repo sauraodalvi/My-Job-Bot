@@ -56,7 +56,7 @@ from modules.dry_run import is_dry_run
 from modules.license import (
     applications_today, can_submit, is_paid, record_application, show_upsell,
     can_scan_referral, record_referral_scan, show_referral_upsell,
-    can_send_referral, record_referral_message, referral_scans_today, referral_messages_today,
+    can_send_referral, referral_scans_today, referral_messages_today,
 )
 
 if use_AI:

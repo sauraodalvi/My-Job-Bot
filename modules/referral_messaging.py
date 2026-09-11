@@ -11,7 +11,7 @@ import csv
 import json
 
 from time import sleep
-from random import randint, uniform
+from random import randint
 from urllib.parse import urlencode, quote
 
 from selenium.webdriver.common.by import By

@@ -1,7 +1,6 @@
 import importlib
 import json
 import os
-import subprocess
 import sys
 
 
@@ -31,7 +30,12 @@ def main() -> int:
 
     config_path = os.path.join(base, "user_config.json")
     if not os.path.exists(config_path):
-        return run_setup()
+        if os.environ.get("AJA_SMOKE") == "1":
+            # Smoke test on a clean folder: skip the GUI wizard entirely and
+            # fall through to the smoke-exit handle below.
+            pass
+        else:
+            return run_setup()
 
     # Returning customer with a config: if they are still on the Free plan (no
     # license key saved) and aren't in an automated/smoke run, pop the wizard's
