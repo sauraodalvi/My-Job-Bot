@@ -17,7 +17,7 @@ import urllib.parse
 import urllib.request
 
 from config.secrets import (
-    free_daily_limit, gumroad_license_key, gumroad_product_id,
+    free_daily_limit, gumroad_product_id,
     referral_free_daily_limit, referral_paid_daily_limit,
     referral_msg_free_daily_limit, referral_msg_paid_daily_limit,
 )
@@ -123,10 +123,48 @@ def remaining_today() -> int:
     return max(0, free_daily_limit - load_usage())
 
 
+_paid_check = None  # (key, result) — Gumroad re-verification memo for this process
+
+
+def _stored_license_key() -> str:
+    '''Read the license key straight from user_config.json. (The import-time
+    `gumroad_license_key` global is stale once the wizard activates a key in
+    the same process.)'''
+    return str((_read_user_config().get("secrets", {}) or {}).get("gumroad_license_key") or "").strip()
+
+
+def _verify_stored_key(key: str) -> bool:
+    '''Re-verify a stored license key against Gumroad once per process.'''
+    try:
+        result = verify_gumroad(key)
+    except (urllib.error.URLError, OSError, ValueError):
+        # Grace: Gumroad unreachable - keep the stored key's benefit so a real
+        # buyer is never blocked by an API outage.
+        # ponytail: this also honours a locally-edited key while offline;
+        # stops casual piracy, not a determined attacker - add a signed
+        # verification marker if that ever matters.
+        return True
+    purchase = result.get("purchase") or {}
+    return bool(result.get("success") and not any(
+        purchase.get(name) for name in ("refunded", "disputed", "chargebacked", "cancelled")))
+
+
 def is_paid() -> bool:
-    '''True when a Gumroad license key (or the special test key) has been
-    stored in user_config.json.'''
-    return bool(str(gumroad_license_key or "").strip())
+    '''True only when the stored license key is real. The key is read straight
+    from user_config.json and re-verified against Gumroad once per process
+    (memoized), so a key edited straight into the config no longer unlocks the
+    Unlimited plan.'''
+    global _paid_check
+    key = _stored_license_key()
+    if not key:
+        return False
+    if key == TEST_LICENSE_KEY:
+        return _test_key_enabled()
+    if _paid_check and _paid_check[0] == key:
+        return _paid_check[1]
+    result = _verify_stored_key(key)
+    _paid_check = (key, result)
+    return result
 
 
 def can_submit() -> bool:
@@ -183,6 +221,7 @@ def activate_license(license_key: str) -> tuple:
     Tries to activate a Gumroad license key. Returns (ok, message).
     On success the valid key is saved into user_config.json -> secrets.
     '''
+    global _paid_check
     key = str(license_key or "").strip()
     if not key:
         return False, "Enter your license key from the Gumroad receipt email."
@@ -206,6 +245,7 @@ def activate_license(license_key: str) -> tuple:
         return True, "TEST key verified against Gumroad - unlimited unlocked. (This was a test purchase.)"
 
     _set_license_key(key)
+    _paid_check = (key, True)
     return True, "License verified - unlimited applications unlocked! 🎉"
 
 

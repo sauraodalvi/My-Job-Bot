@@ -8,7 +8,20 @@ License: MIT  (https://opensource.org/license/mit)
 
 import json
 
+import pytest
+
 import modules.license as license_mod
+
+
+@pytest.fixture(autouse=True)
+def _isolated_license(tmp_path, monkeypatch):
+    '''Every test gets its own (absent) user_config.json on disk and a cold
+    paid-cache, so unit tests never read the developer's real config or hit
+    the real Gumroad API.'''
+    monkeypatch.setattr(license_mod, "USER_CONFIG_PATH", str(tmp_path / "user_config.json"))
+    license_mod._paid_check = None
+    yield
+    license_mod._paid_check = None
 
 
 # ---------------------------------------------------------------------------
@@ -43,7 +56,6 @@ def test_can_scan_referral_free_limit(monkeypatch, tmp_path):
     monkeypatch.setattr(license_mod, "REFERRAL_USAGE_PATH", str(tmp_path / "referral_usage.json"))
     monkeypatch.setattr(license_mod, "referral_free_daily_limit", 1)
     monkeypatch.setattr(license_mod, "referral_paid_daily_limit", 4)
-    monkeypatch.setattr(license_mod, "gumroad_license_key", "")
 
     monkeypatch.setattr(license_mod, "_load_referral_usage", lambda: 0)
     assert license_mod.can_scan_referral() is True
@@ -57,7 +69,9 @@ def test_can_scan_referral_paid_limit(monkeypatch, tmp_path):
     monkeypatch.setattr(license_mod, "REFERRAL_USAGE_PATH", str(tmp_path / "referral_usage.json"))
     monkeypatch.setattr(license_mod, "referral_free_daily_limit", 1)
     monkeypatch.setattr(license_mod, "referral_paid_daily_limit", 4)
-    monkeypatch.setattr(license_mod, "gumroad_license_key", "PAID-KEY")
+    license_mod._set_license_key("PAID-KEY")
+    monkeypatch.setattr(license_mod, "verify_gumroad",
+                        lambda key: {"success": True, "purchase": {}})
 
     monkeypatch.setattr(license_mod, "_load_referral_usage", lambda: 3)
     assert license_mod.can_scan_referral() is True
@@ -87,7 +101,6 @@ def test_can_send_referral_free_limit(monkeypatch, tmp_path):
     monkeypatch.setattr(license_mod, "REFERRAL_MSG_USAGE_PATH", str(tmp_path / "referral_msg_usage.json"))
     monkeypatch.setattr(license_mod, "referral_msg_free_daily_limit", 3)
     monkeypatch.setattr(license_mod, "referral_msg_paid_daily_limit", 0)
-    monkeypatch.setattr(license_mod, "gumroad_license_key", "")
 
     monkeypatch.setattr(license_mod, "_load_referral_msg_usage", lambda: 2)
     assert license_mod.can_send_referral() is True
@@ -101,7 +114,9 @@ def test_can_send_referral_paid_unlimited(monkeypatch, tmp_path):
     monkeypatch.setattr(license_mod, "REFERRAL_MSG_USAGE_PATH", str(tmp_path / "referral_msg_usage.json"))
     monkeypatch.setattr(license_mod, "referral_msg_free_daily_limit", 3)
     monkeypatch.setattr(license_mod, "referral_msg_paid_daily_limit", 0)
-    monkeypatch.setattr(license_mod, "gumroad_license_key", "PAID-KEY")
+    license_mod._set_license_key("PAID-KEY-UNL")
+    monkeypatch.setattr(license_mod, "verify_gumroad",
+                        lambda key: {"success": True, "purchase": {}})
 
     monkeypatch.setattr(license_mod, "_load_referral_msg_usage", lambda: 99)
     assert license_mod.can_send_referral() is True
@@ -145,7 +160,6 @@ def test_record_application_increments(monkeypatch, tmp_path):
 def test_can_submit_respects_daily_limit(monkeypatch, tmp_path, recwarn):
     monkeypatch.setattr(license_mod, "USAGE_PATH", str(tmp_path / "usage.json"))
     monkeypatch.setattr(license_mod, "free_daily_limit", 10)
-    monkeypatch.setattr(license_mod, "gumroad_license_key", "")
 
     monkeypatch.setattr(license_mod, "load_usage", lambda: 9)
     assert license_mod.can_submit() is True
@@ -156,17 +170,20 @@ def test_can_submit_respects_daily_limit(monkeypatch, tmp_path, recwarn):
 
 def test_paid_user_never_blocked(monkeypatch, tmp_path):
     monkeypatch.setattr(license_mod, "USAGE_PATH", str(tmp_path / "usage.json"))
-    monkeypatch.setattr(license_mod, "gumroad_license_key", "AAAA-BBBB-CCCC-DDDD")
+    license_mod._set_license_key("AAAA-BBBB-CCCC-DDDD")
+    monkeypatch.setattr(license_mod, "verify_gumroad",
+                        lambda key: {"success": True, "purchase": {}})
     monkeypatch.setattr(license_mod, "load_usage", lambda: 99)
     assert license_mod.is_paid() is True
     assert license_mod.can_submit() is True
     assert license_mod.remaining_today() is None
 
 
-def test_is_paid_blank_key_is_free(monkeypatch):
-    monkeypatch.setattr(license_mod, "gumroad_license_key", "   ")
+def test_is_paid_blank_key_is_free(monkeypatch, tmp_path):
+    cfg = tmp_path / "user_config.json"
+    cfg.write_text(json.dumps({"secrets": {"gumroad_license_key": "   "}}), encoding="utf-8")
     assert license_mod.is_paid() is False
-    monkeypatch.setattr(license_mod, "gumroad_license_key", "")
+    cfg.write_text(json.dumps({"secrets": {"gumroad_license_key": ""}}), encoding="utf-8")
     assert license_mod.is_paid() is False
 
 
@@ -263,10 +280,59 @@ def test_test_key_rejected_when_dev_disabled(monkeypatch, tmp_path):
 
 
 def test_test_key_acts_paid(monkeypatch):
-    monkeypatch.setattr(license_mod, "gumroad_license_key", license_mod.TEST_LICENSE_KEY)
+    monkeypatch.setenv("AJA_DEV", "1")
+    monkeypatch.setattr(license_mod, "_stored_license_key", lambda: license_mod.TEST_LICENSE_KEY)
     assert license_mod.is_paid() is True
     assert license_mod.can_submit() is True   # never blocked
     assert license_mod.remaining_today() is None
+
+
+def test_test_key_inert_without_dev(monkeypatch):
+    monkeypatch.delenv("AJA_DEV", raising=False)
+    monkeypatch.setattr(license_mod, "_stored_license_key", lambda: license_mod.TEST_LICENSE_KEY)
+    assert license_mod.is_paid() is False
+
+
+# ---------------------------------------------------------------------------
+# Runtime re-verification (defeats a key edited straight into user_config.json)
+# ---------------------------------------------------------------------------
+
+def test_spoofed_key_does_not_unlock(monkeypatch, tmp_path):
+    cfg = tmp_path / "user_config.json"
+    cfg.write_text(json.dumps({"secrets": {"gumroad_license_key": "SPOOFED-KEY"}}), encoding="utf-8")
+    monkeypatch.setattr(license_mod, "USAGE_PATH", str(tmp_path / "usage.json"))
+    monkeypatch.setattr(license_mod, "free_daily_limit", 10)
+    monkeypatch.setattr(license_mod, "load_usage", lambda: 10)
+    monkeypatch.setattr(license_mod, "verify_gumroad",
+                        lambda key: {"success": False, "message": "No such license."})
+    assert license_mod.is_paid() is False
+    assert license_mod.can_submit() is False   # free limit still blocks
+
+
+def test_offline_grace_keeps_buyer_paid(monkeypatch, tmp_path):
+    cfg = tmp_path / "user_config.json"
+    cfg.write_text(json.dumps({"secrets": {"gumroad_license_key": "REAL-KEY"}}), encoding="utf-8")
+    monkeypatch.setattr(license_mod, "verify_gumroad",
+                        lambda key: (_ for _ in ()).throw(OSError("offline")))
+    assert license_mod.is_paid() is True
+
+
+def test_key_change_reverifies(monkeypatch, tmp_path):
+    cfg = tmp_path / "user_config.json"
+    monkeypatch.setattr(license_mod, "verify_gumroad",
+                        lambda key: {"success": key == "GOOD-KEY", "purchase": {}})
+    cfg.write_text(json.dumps({"secrets": {"gumroad_license_key": "GOOD-KEY"}}), encoding="utf-8")
+    assert license_mod.is_paid() is True
+    cfg.write_text(json.dumps({"secrets": {"gumroad_license_key": "EVIL-KEY"}}), encoding="utf-8")
+    assert license_mod.is_paid() is False
+
+
+def test_activation_flags_as_paid_same_process(monkeypatch, tmp_path):
+    monkeypatch.setattr(license_mod, "verify_gumroad",
+                        lambda key: {"success": True, "purchase": {}})
+    ok, _ = license_mod.activate_license("AAAA-BBBB-CCCC-DDDD")
+    assert ok is True
+    assert license_mod.is_paid() is True   # no second network call - cache updated
 
 
 # ---------------------------------------------------------------------------
