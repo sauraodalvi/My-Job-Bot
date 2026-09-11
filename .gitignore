@@ -19,6 +19,9 @@ user_config.json
 .bot_run.log
 .bot_run.pid
 
+# Personal resume context fed to the AI — contains real PII, never commit
+resume_context.txt
+
 # Built artifact
 AutoJobApplier.exe
 /build/
