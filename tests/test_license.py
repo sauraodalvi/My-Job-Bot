@@ -236,6 +236,7 @@ def test_activate_handles_network_error(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_activate_test_key_offline(monkeypatch, tmp_path):
+    monkeypatch.setenv("AJA_DEV", "1")
     cfg = tmp_path / "user_config.json"
     monkeypatch.setattr(license_mod, "USER_CONFIG_PATH", str(cfg))
     # The test key must NOT hit the (unpatched) Gumroad network call.
@@ -244,6 +245,21 @@ def test_activate_test_key_offline(monkeypatch, tmp_path):
     assert "unlimited" in message.lower()
     data = json.loads(cfg.read_text(encoding="utf-8"))
     assert data["secrets"]["gumroad_license_key"] == license_mod.TEST_LICENSE_KEY
+
+
+def test_test_key_rejected_when_dev_disabled(monkeypatch, tmp_path):
+    # Without AJA_DEV=1 the test key is inert: it must fall through to the
+    # (mocked) Gumroad verification, fail, and NOT be saved. This is what
+    # makes the shipped build leak-proof for the special key.
+    monkeypatch.delenv("AJA_DEV", raising=False)
+    cfg = tmp_path / "user_config.json"
+    monkeypatch.setattr(license_mod, "USER_CONFIG_PATH", str(cfg))
+    monkeypatch.setattr(license_mod, "verify_gumroad",
+                        lambda key: {"success": False, "message": "No such license."})
+    ok, message = license_mod.activate_license(license_mod.TEST_LICENSE_KEY)
+    assert ok is False
+    assert "No such license" in message
+    assert not cfg.exists()
 
 
 def test_test_key_acts_paid(monkeypatch):

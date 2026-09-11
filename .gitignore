@@ -61,6 +61,7 @@ package-lock.json
 # Marketing & purchased-content collateral (kept out of the repo)
 gumroad_content/
 gumroad_content.zip
+setup_folder/
 landing page/
 LANDING_COPY_PLAN.md
 

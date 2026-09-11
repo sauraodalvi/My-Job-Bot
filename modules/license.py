@@ -29,8 +29,18 @@ LICENSE_API = "https://api.gumroad.com/v2/licenses/verify"
 # through Gumroad. Handy for testing features (or for sharing a friend's test
 # build) without making a real purchase. Set this as the key in user_config.json
 # (secrets.gumroad_license_key) and the app treats the user as paid/unlimited.
-# NOTE: Do not ship this in a public build you want to be paid-only.
+#
+# It only works when AJA_DEV=1 is set in the environment, so it is INERT in a
+# shipped (public) build: environment variables never travel with the exe, so a
+# normal buyer pasting this key just gets "invalid key" and nothing is saved.
+# To enable it for your own testing, run with the env var set:
+#     setx AJA_DEV 1   (or launch the exe from a shell with `set AJA_DEV=1`)
 TEST_LICENSE_KEY = "TEST-FRIEND-UNLIMITED-1234"
+
+
+def _test_key_enabled() -> bool:
+    '''True only when the special test key should be honored (AJA_DEV=1).'''
+    return os.environ.get("AJA_DEV", "") == "1"
 
 
 def _maybe_popup(message: str, title: str) -> None:
@@ -176,7 +186,7 @@ def activate_license(license_key: str) -> tuple:
     key = str(license_key or "").strip()
     if not key:
         return False, "Enter your license key from the Gumroad receipt email."
-    if key == TEST_LICENSE_KEY:
+    if key == TEST_LICENSE_KEY and _test_key_enabled():
         _set_license_key(key)
         return True, "TEST key activated - unlimited unlocked (no Gumroad verification)."
     try:
