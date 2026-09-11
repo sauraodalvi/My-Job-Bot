@@ -128,6 +128,7 @@ def test_applied_jobs_mark_unknown_id_returns_404(client, tmp_path, monkeypatch)
 # ------------------------------- setup flow API ---------------------------
 def _setup_answers():
     return {
+        "account": {"username": "ada@example.com", "password": "secret-pw"},
         "resume": {"resume_path": "C:/My Resume.pdf"},
         "wants": {"sentence": "AI Product Manager roles in Europe, remote or hybrid"},
         "policy": {"ask_before_sending": True},
@@ -144,11 +145,12 @@ def test_setup_flow_api_serves_shared_declaration(client):
     data = resp.get_json()
     assert data["title"] == "Let's get you ready"
     assert [s["title"] for s in data["steps"]] == [
+        "Sign in to LinkedIn",
         "Your resume",
         "Tell me what you want",
         "Should I ask before sending?",
     ]
-    assert set(data["answers"]) == {"resume", "wants", "policy"}
+    assert set(data["answers"]) == {"account", "resume", "wants", "policy"}
 
 
 def test_setup_save_persists_through_shared_path(client, tmp_path, monkeypatch):
@@ -171,6 +173,8 @@ def test_setup_save_persists_through_shared_path(client, tmp_path, monkeypatch):
     assert saved["questions"]["default_resume_path"] == "C:/My Resume.pdf"
     assert saved["questions"]["pause_before_submit"] is True
     assert saved["setup_flow"]["want_sentence"].startswith("AI Product Manager")
+    assert saved["secrets"]["username"] == "ada@example.com"
+    assert saved["secrets"]["password"] == "secret-pw"
 
 
 def test_setup_save_rejects_broken_flow(client, tmp_path, monkeypatch):

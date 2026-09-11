@@ -137,7 +137,8 @@
                     });
                     wrap.appendChild(yesno);
                 } else {
-                    var txt = el("input", [["type", "text"], ["id", step.id + "__" + f.key], ["placeholder", f.label]]);
+                    var ttype = f.type === "password" ? "password" : "text";
+                    var txt = el("input", [["type", ttype], ["id", step.id + "__" + f.key], ["placeholder", f.label]]);
                     txt.value = current;
                     wrap.appendChild(txt);
                 }
@@ -188,13 +189,18 @@
             var resumeProfile = ANSWERS.resume && ANSWERS.resume.profile_text ? ANSWERS.resume.profile_text : "";
             var wantsText = (wants.parsed && wants.parsed.confirmation) ? wants.parsed.confirmation : (wants.sentence || "");
             var ask = ANSWERS.policy ? ANSWERS.policy.ask_before_sending : true;
+            var account = ANSWERS.account || {};
+            var signinName = (account.username && String(account.username).trim()) || fieldValue('account', 'username');
             var resumeLine = "Resume: " + (resumePath ? String(resumePath).split(/[\\\/]/).pop() : 'not added yet');
             if (resumeProfile) resumeLine += " (I read: " + resumeProfile + ")";
+            var lines = [];
+            if (signinName) lines.push("I'll sign in to LinkedIn as: " + signinName);
             [
                 resumeLine,
                 "I'll look for: " + (wantsText || 'nothing yet'),
                 (ask === false ? "I'll send applications without asking first." : "Before anything is sent, I'll ask you first.")
-            ].forEach(function (line) { ul.appendChild(el("li", [], [line])); });
+            ].forEach(function (line) { lines.push(line); });
+            lines.forEach(function (line) { ul.appendChild(el("li", [], [line])); });
             box.appendChild(ul);
             card.appendChild(box);
             return card;

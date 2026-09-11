@@ -18,13 +18,14 @@ import setup_flow
 
 
 # --------------------------------- steps ------------------------------------
-def test_three_steps_with_exact_titles():
+def test_steps_with_exact_titles():
     assert [s["title"] for s in setup_flow.STEPS] == [
+        "Sign in to LinkedIn",
         "Your resume",
         "Tell me what you want",
         "Should I ask before sending?",
     ]
-    assert [s["id"] for s in setup_flow.STEPS] == ["resume", "wants", "policy"]
+    assert [s["id"] for s in setup_flow.STEPS] == ["account", "resume", "wants", "policy"]
 
 
 def test_every_step_explains_why_it_is_asked():
@@ -40,8 +41,10 @@ def test_welcome_says_in_one_sentence_what_the_tool_does():
 
 # -------------------------------- validation -------------------------------
 def test_required_fields_are_marked():
-    whole_flow_required = [f["key"] for f in setup_flow.step("resume")["fields"] if f.get("required")] + \
+    whole_flow_required = [f["key"] for f in setup_flow.step("account")["fields"] if f.get("required")] + \
+        [f["key"] for f in setup_flow.step("resume")["fields"] if f.get("required")] + \
         [f["key"] for f in setup_flow.step("wants")["fields"] if f.get("required")]
+    assert setup_flow.required_fields("account") == ["username", "password"]
     assert setup_flow.required_fields("resume") == ["resume_path"]
     assert setup_flow.required_fields("wants") == ["sentence"]
     assert whole_flow_required
@@ -63,6 +66,7 @@ def test_optional_policy_step_passes_even_empty():
 
 def test_validate_flow_reports_only_broken_steps():
     errors = setup_flow.validate_flow({
+        "account": {"username": "ada@example.com", "password": "secret"},
         "resume": {"resume_path": ""},
         "wants": {"sentence": "AI PM roles in Europe"},
         "policy": {"ask_before_sending": True},
@@ -72,10 +76,24 @@ def test_validate_flow_reports_only_broken_steps():
 
 def test_validate_flow_empty_when_complete():
     assert setup_flow.validate_flow({
+        "account": {"username": "ada@example.com", "password": "secret"},
         "resume": {"resume_path": "C:/resume.pdf"},
         "wants": {"sentence": "AI PM roles in Europe"},
         "policy": {"ask_before_sending": True},
     }) == {}
+
+
+
+def test_blank_credentials_block_finishing():
+    # The bot cannot apply without a LinkedIn login, so the very first step must
+    # be required too - not just resume and wants.
+    errors = setup_flow.validate_flow({
+        "account": {"username": "   ", "password": ""},
+        "resume": {"resume_path": "C:/resume.pdf"},
+        "wants": {"sentence": "AI PM roles in Europe"},
+        "policy": {"ask_before_sending": True},
+    })
+    assert "account" in errors
 
 
 # --------------------------- save-what-the-flow-touched -------------------
@@ -86,6 +104,7 @@ def test_apply_answers_only_touches_flow_keys():
         "search": {"search_terms": ["Engineer"]},
     }
     out = setup_flow.apply_answers(cfg, {
+        "account": {"username": "ada.lovelace@gmail.com", "password": "analytical"},
         "resume": {"resume_path": "C:/r.pdf"},
         "wants": {"sentence": "AI PM roles in Europe"},
         "policy": {"ask_before_sending": True},
@@ -94,13 +113,28 @@ def test_apply_answers_only_touches_flow_keys():
     assert out["questions"]["default_resume_path"] == "C:/r.pdf"
     assert out["questions"]["pause_before_submit"] is True
     assert out["setup_flow"]["want_sentence"] == "AI PM roles in Europe"
+    # The account step owns secrets.username/password...
+    assert out["secrets"]["username"] == "ada.lovelace@gmail.com"
+    assert out["secrets"]["password"] == "analytical"
     # Everything the flow does NOT own is untouched...
-    assert out["secrets"]["username"] == "someone@example.com"
     assert out["questions"]["years_of_experience"] == 5
     assert out["search"]["search_terms"] == ["Engineer"]
     # ...and the input dict was not mutated (pure function).
     assert cfg["questions"].get("default_resume_path") is None
     assert "setup_flow" not in cfg
+
+
+def test_apply_answers_never_blanks_existing_credentials():
+    # A re-opened flow that leaves the password empty (pre-filled value removed)
+    # must not destroy the stored credentials.
+    out = setup_flow.apply_answers({
+        "secrets": {"username": "ada@example.com", "password": "keepme"},
+    }, {
+        "account": {"username": "", "password": ""},
+        "wants": {"sentence": "x"},
+    })
+    assert out["secrets"]["username"] == "ada@example.com"
+    assert out["secrets"]["password"] == "keepme"
 
 
 def test_ask_before_sending_defaults_true():
@@ -126,6 +160,7 @@ def test_save_flow_writes_through_config_path(monkeypatch, tmp_path):
 
     # Pre-seed unrelated keys; they must survive the read-modify-write.
     setup_flow.save_flow({
+        "account": {"username": "sau@example.com", "password": "secret123"},
         "resume": {"resume_path": "C:/r.pdf"},
         "wants": {"sentence": "AI PM roles in Europe"},
         "policy": {"ask_before_sending": True},
@@ -136,12 +171,15 @@ def test_save_flow_writes_through_config_path(monkeypatch, tmp_path):
     assert saved["questions"]["default_resume_path"] == "C:/r.pdf"
     assert saved["setup_flow"]["want_sentence"] == "AI PM roles in Europe"
     assert saved["questions"]["pause_before_submit"] is True
+    assert saved["secrets"]["username"] == "sau@example.com"
+    assert saved["secrets"]["password"] == "secret123"
 
 
 # ------------------------------- pre-fill --------------------------------
 def test_prefill_reads_saved_state(monkeypatch, tmp_path):
     cfg_path = tmp_path / "user_config.json"
     cfg_path.write_text(json.dumps({
+        "secrets": {"username": "ada@example.com", "password": "keepme"},
         "questions": {"default_resume_path": "C:/old.pdf",
                       "pause_before_submit": False},
         "setup_flow": {"want_sentence": "Data Analyst roles remote"},
@@ -149,6 +187,8 @@ def test_prefill_reads_saved_state(monkeypatch, tmp_path):
     monkeypatch.setattr(setup_flow, "USER_CONFIG_PATH", str(cfg_path))
 
     pre = setup_flow.prefill()
+    assert pre["account"]["username"] == "ada@example.com"
+    assert pre["account"]["password"] == "keepme"
     assert pre["resume"]["resume_path"] == "C:/old.pdf"
     assert pre["wants"]["sentence"] == "Data Analyst roles remote"
     assert pre["policy"]["ask_before_sending"] is False
@@ -158,6 +198,7 @@ def test_prefill_missing_state_uses_defaults(monkeypatch, tmp_path):
     missing = str(tmp_path / "nope.json")
     monkeypatch.setattr(setup_flow, "USER_CONFIG_PATH", missing)
     pre = setup_flow.prefill()
+    assert pre["account"] == {"username": "", "password": ""}
     assert pre["resume"]["resume_path"] == ""
     assert pre["wants"]["sentence"] == ""
     # Default safe answer: ask before sending.
@@ -167,13 +208,25 @@ def test_prefill_missing_state_uses_defaults(monkeypatch, tmp_path):
 # -------------------------------- summary --------------------------------
 def test_summary_lists_every_answer_in_plain_words():
     lines = setup_flow.summary_lines({
+        "account": {"username": "ada@example.com"},
         "resume": {"resume_path": "C:/docs/My Resume.pdf"},
         "wants": {"sentence": "AI Product Manager roles in Europe"},
         "policy": {"ask_before_sending": True},
     })
-    assert "My Resume.pdf" in lines[0]
-    assert "AI Product Manager roles in Europe" in lines[1]
+    assert lines[0] == "I'll sign in to LinkedIn as ada@example.com."
+    assert any("My Resume.pdf" in l for l in lines)
+    assert any("AI Product Manager roles in Europe" in l for l in lines)
     assert any("ask you first" in l for l in lines)
+
+
+def test_summary_without_account_skips_signin_line():
+    lines = setup_flow.summary_lines({
+        "resume": {"resume_path": "C:/r.pdf"},
+        "wants": {"sentence": "x"},
+        "policy": {"ask_before_sending": True},
+    })
+    assert "Resume: r.pdf" in lines[0]
+    assert not any("sign in" in l.lower() for l in lines)
 
 
 def test_summary_reflects_ask_off():
@@ -213,7 +266,7 @@ def test_tkinter_stub_renderer_persists_through_shared_path(monkeypatch, tmp_pat
     cfg = setup_wizard.build_config(
         "a@b.com", "pw", "", "", "", "C:/stub.pdf", "", "",
         "", "", "4", "Full-time", existing={},
-        ai_enabled=True, first_name="Ada", last_name="Lovelace", license_key="",
+        first_name="Ada", last_name="Lovelace", license_key="",
     )
     cfg = setup_flow.apply_answers(cfg, answers)
     setup_wizard.write_config(cfg)

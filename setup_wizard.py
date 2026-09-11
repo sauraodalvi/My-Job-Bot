@@ -43,7 +43,7 @@ def build_config(
     current_city, years_of_experience,
     resume_path, website, linkedin_url,
     search_terms, locations, current_experience, job_types,
-    existing=None, ai_enabled=True,
+    existing=None,
     first_name="", last_name="", license_key="",
 ):
     existing = existing or {}
@@ -52,13 +52,30 @@ def build_config(
     secrets = dict(existing.get("secrets", {}))
     secrets.update({
         "username": (username or "").strip(),
-        "password": password or "",
-        "use_AI": bool(ai_enabled),
-        "ai_provider": "gemini",
-        "llm_model": GEMINI_MODEL,
-        "llm_api_key": (gemini_key or "").strip(),
+        "password": password or secrets.get("password", ""),
         "gumroad_license_key": (license_key or "").strip(),
     })
+
+    gemini_key = (gemini_key or "").strip()
+    if gemini_key:
+        secrets.update({
+            "use_AI": True,
+            "ai_provider": "gemini",
+            "llm_model": GEMINI_MODEL,
+            "llm_api_key": gemini_key,
+            "gemini_api_key": gemini_key,
+        })
+    elif secrets.get("use_AI"):
+        # An AI provider is already configured (OpenRouter / OpenAI / DeepSeek).
+        # Leave it untouched - a blank Gemini key means "don't change my AI".
+        pass
+    else:
+        secrets.update({
+            "use_AI": False,
+            "ai_provider": "gemini",
+            "llm_model": GEMINI_MODEL,
+            "llm_api_key": "",
+        })
 
     personals = dict(existing.get("personals", {}))
     personals["current_city"] = (current_city or "").strip()
@@ -88,7 +105,7 @@ def build_config(
     search.update({
         "search_terms": terms,
         "search_location": ", ".join(locs),
-        "current_experience": int(float(current_experience)) if str(current_experience).strip().replace(".", "").isdigit() else search.get("current_experience", 4),
+        "current_experience": _safe_current_experience(current_experience, search.get("current_experience", 4)),
     })
     if job_types:
         search["job_type"] = [j.strip() for j in job_types.split(",") if j.strip()]
@@ -99,6 +116,22 @@ def build_config(
         "questions": questions,
         "search": search,
     }
+
+
+def _safe_current_experience(raw, default):
+    '''Parse the experience-years box without crashing on a typo like "12.34.56".'''
+    try:
+        default = int(float(default))
+    except (TypeError, ValueError):
+        default = 4
+    text = str(raw or "").strip()
+    if not text:
+        return default
+    try:
+        value = float(text)
+    except ValueError:
+        return default
+    return int(value) if value >= 0 else default
 
 
 def write_config(cfg):
@@ -194,6 +227,7 @@ class Wizard:
         self.terms_widget = None
         self.locs_widget = None
         self.in_advanced = False
+        self.last_quick = 0
         self.pages = []
         self.current = 0
         self.report = []
@@ -227,17 +261,28 @@ class Wizard:
         # Primary flow = welcome..allset (no advanced pages).
         return len(flow_page_ids()) - 1
 
-    def _map_initial(self, legacy_index):
-        '''Map the old 8-page wizard indexes onto the new page list.'''
-        if legacy_index <= self.quick_last:
-            return legacy_index
-        # Legacy indexes 1..6 map onto advanced pages (account, ai, jobs,
-        # resume, unlock, schedule); 7 was "all set" (index 5 in the new flow).
-        advanced_offset = self.quick_last + 1
-        legacy_in_advanced = {1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5}
-        if legacy_index in legacy_in_advanced:
+    # Advanced pages (behind the "Advanced" toggle), in build order.
+    advanced_ids = ["account", "ai", "jobs", "resume", "unlock", "schedule"]
+
+    def _map_initial(self, initial):
+        '''Resolve the page to open on startup. Accepts a page id string
+        ("welcome", "unlock", ...) or the legacy 7-page wizard index
+        (1-6 = the advanced pages, 7 = All set).'''
+        if isinstance(initial, str):
+            quick_ids = flow_page_ids()
+            if initial in quick_ids:
+                return quick_ids.index(initial)
+            if initial in self.advanced_ids:
+                self.in_advanced = True
+                return self.quick_last + 1 + self.advanced_ids.index(initial)
+            return 0
+        if initial == 0:
+            return 0
+        if 1 <= initial <= 6:
             self.in_advanced = True
-            return advanced_offset + legacy_in_advanced[legacy_index]
+            return self.quick_last + 1 + (initial - 1)
+        if initial == 7:
+            return self.quick_last
         return 0
 
     def show_page(self, idx):
@@ -247,6 +292,8 @@ class Wizard:
         page.grid(row=0, column=0, sticky="nsew")
         self.current = idx
         self.in_advanced = idx > self.quick_last
+        if not self.in_advanced:
+            self.last_quick = idx
         self.update_nav()
 
     def update_nav(self):
@@ -403,7 +450,7 @@ class Wizard:
         ftype = field_def["type"]
         key = field_def["key"]
         saved = (self.prefill.get(step_def["id"]) or {}).get(key, "")
-        if ftype in ("text",):
+        if ftype in ("text", "password"):
             var = tk.StringVar(value=saved)
             if field_def.get("pick"):
                 row = tk.Frame(parent)
@@ -411,7 +458,8 @@ class Wizard:
                 tk.Entry(row, textvariable=var, font=("Segoe UI", 10)).pack(side="left", fill="x", expand=True)
                 tk.Button(row, text="Browse...", font=("Segoe UI", 10), command=lambda: self.pick_resume(var)).pack(side="left", padx=(8, 0))
                 return var
-            tk.Entry(parent, textvariable=var, font=("Segoe UI", 10)).pack(fill="x")
+            tk.Entry(parent, textvariable=var, font=("Segoe UI", 10),
+                     show="*" if ftype == "password" else None).pack(fill="x")
             return var
         if ftype == "textarea":
             box = tk.Text(parent, font=("Segoe UI", 10), height=5)
@@ -448,7 +496,7 @@ class Wizard:
             ftype = field_def["type"]
             if ftype == "textarea":
                 answers[field_def["key"]] = widget.get("1.0", "end").strip()
-            elif ftype in ("text", "yesno"):
+            elif ftype in ("text", "password", "yesno"):
                 answers[field_def["key"]] = widget.get()
         if step_def["id"] == "wants" and self._wants_parsed:
             answers["parsed"] = self._wants_parsed
@@ -646,9 +694,10 @@ class Wizard:
                  font=("Segoe UI", 9), fg="#666").pack(anchor="w", pady=(4, 0))
 
     def _license_status_text(self):
-        if (self.var_license.get() or "").strip():
+        from modules.license import free_daily_limit
+        if setup_flow.has_license():
             return "Status: Unlimited unlocked"
-        return "Status: Free plan - up to 10 applications per day"
+        return "Status: Free plan - up to %d applications per day" % free_daily_limit
 
     def activate_license(self):
         from modules.license import activate_license as verify
@@ -719,10 +768,24 @@ class Wizard:
             self.show_page(flow_page_ids().index(first_step))
             return
 
-        ai_enabled = bool((self.var_gemini.get() or "").strip())
+        username = (self._var_account_username.get() or "").strip()
+        password = self._var_account_password.get()
+        # Fall back to the advanced account page for users who filled that instead.
+        if not username:
+            username = (self.var_username.get() or "").strip()
+        if not password:
+            password = self.var_password.get()
+        if len(username) < 5 or len(password) < 5:
+            messagebox.showwarning(
+                "Almost there",
+                "Please double-check your LinkedIn email and password (each needs at least 5 characters).",
+            )
+            self.show_page(flow_page_ids().index("account"))
+            return
+
         cfg = build_config(
-            username=self.var_username.get(),
-            password=self.var_password.get(),
+            username=username,
+            password=password,
             gemini_key=self.var_gemini.get(),
             current_city=self.var_city.get(),
             years_of_experience=self.var_years.get(),
@@ -734,7 +797,6 @@ class Wizard:
             current_experience=self.var_experience.get(),
             job_types=self.var_jobtype.get(),
             existing=self.existing,
-            ai_enabled=ai_enabled,
             first_name=self.var_first.get(),
             last_name=self.var_last.get(),
             license_key=self.var_license.get(),
@@ -820,7 +882,7 @@ def run_gui(initial_step=0) -> None:
             buttons.append(b)
         else:
             b = tk.Button(nav, text="Back to quick setup", font=("Segoe UI", 9), fg="#1a7f37",
-                          command=lambda: nav_to(buttons, app.quick_last))
+                          command=lambda: nav_to(buttons, app.last_quick))
             b.pack(side="right", padx=(0, 10))
             advanced_buttons.append(b)
 

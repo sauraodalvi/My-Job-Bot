@@ -21,19 +21,22 @@ either UI. A step is:
 
 Supported field types:
     text      - single line of text
+    password  - single masked line (e.g. the LinkedIn sign-in)
     textarea  - multi-line text
     yesno     - a plain Yes / No choice (stored as a bool)
 
 Persistence:
     The flow writes through the SAME user_config.json the tool already reads
     (see config/_overrides.py). It owns these keys:
-      * Step 1 resume  -> questions.default_resume_path
+      * Step 1 account -> secrets.username + secrets.password (the login the
+                            bot uses to sign in; only written when filled)
+      * Step 2 resume  -> questions.default_resume_path
                           + resume_profiles["<path>"] (file and extracted
                             profile stored as SEPARATE records)
-      * Step 2 wants   -> setup_flow.want_sentence + saved_search (the parsed
+      * Step 3 wants   -> setup_flow.want_sentence + saved_search (the parsed
                             Saved Search; legacy search.salary / search.
                             date_posted / search_terms are DERIVED from it)
-      * Step 3 policy  -> questions.pause_before_submit + agent_policy (level
+      * Step 4 policy  -> questions.pause_before_submit + agent_policy (level
                             + action policy; safety settings derived from an
                             explicit table)
     Everything else in the config file is left untouched (read-modify-write).
@@ -59,9 +62,31 @@ WELCOME_NOTES = [
     "Everything you enter stays on this computer.",
 ]
 
-FIRST_STEP_ID = "resume"
+FIRST_STEP_ID = "account"
 
 STEPS = [
+    {
+        "id": "account",
+        "title": "Sign in to LinkedIn",
+        "why": "I log in as you so every application is sent from your account.",
+        "required": True,
+        "fields": [
+            {
+                "key": "username",
+                "label": "LinkedIn email",
+                "type": "text",
+                "required": True,
+                "help": "The email you use to sign in to LinkedIn.",
+            },
+            {
+                "key": "password",
+                "label": "LinkedIn password",
+                "type": "password",
+                "required": True,
+                "help": "Stored only on this PC in user_config.json - the bot never shares it.",
+            },
+        ],
+    },
     {
         "id": "resume",
         "title": "Your resume",
@@ -264,6 +289,7 @@ def prefill():
     user_config.json, so re-opening the flow shows what's already saved.
     '''
     cfg = _read_config()
+    secrets_section = _read_secrets()
     questions = cfg.get("questions") or {}
     flow_section = cfg.get("setup_flow") or {}
 
@@ -282,6 +308,10 @@ def prefill():
     profile_text = (profile_record or {}).get("summary_line") or ""
 
     return {
+        "account": {
+            "username": str(secrets_section.get("username", "") or "").strip(),
+            "password": str(secrets_section.get("password", "") or ""),
+        },
         "resume": {
             "resume_path": resume_value,
             "looks_right": True,
@@ -303,9 +333,21 @@ def apply_answers(cfg, answers):
     cfg = json.loads(json.dumps(cfg or {}))
 
     answers = answers or {}
+    account_answers = answers.get("account") or {}
     resume_answers = answers.get("resume") or {}
     wants_answers = answers.get("wants") or {}
     policy_answers = answers.get("policy") or {}
+
+    # --- account: LinkedIn sign-in (only written when filled out) ------------
+    if account_answers:
+        secrets = dict(cfg.get("secrets") or {})
+        username = str(account_answers.get("username", "") or "").strip()
+        password = account_answers.get("password") or ""
+        if username:
+            secrets["username"] = username
+        if password:
+            secrets["password"] = password
+        cfg["secrets"] = secrets
 
     questions = dict(cfg.get("questions") or {})
     resume_path = str(resume_answers.get("resume_path", "") or "").strip()
@@ -370,6 +412,7 @@ def summary_lines(answers):
     used by the "here's everything you told me" final screen.
     '''
     answers = answers or {}
+    account_answers = answers.get("account") or {}
     resume_answers = answers.get("resume") or {}
     wants_answers = answers.get("wants") or {}
     policy_answers = answers.get("policy") or {}
@@ -396,7 +439,10 @@ def summary_lines(answers):
     else:
         wants_text = sentence
 
+    signin_email = str(account_answers.get("username", "") or "").strip()
     lines = []
+    if signin_email:
+        lines.append("I'll sign in to LinkedIn as %s." % signin_email)
     lines.append(resume_line)
     lines.append("I'll look for: %s" % (wants_text if wants_text else "nothing yet"))
     if ask:

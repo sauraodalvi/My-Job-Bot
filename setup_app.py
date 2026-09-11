@@ -40,7 +40,7 @@ def main() -> int:
         print("No license key yet - opening the Unlock step to activate unlimited applications.")
         try:
             import setup_wizard
-            setup_wizard.run_gui(initial_step=5)
+            setup_wizard.run_gui(initial_step="unlock")
         except Exception as e:
             print("Could not open the Unlock window:", e)
 
